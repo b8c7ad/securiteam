@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, Message, SystemInfo, VerificationProfile, Workflow, WorkflowMessage } from "./types";
+import type {
+  Agent,
+  AgentRun,
+  Message,
+  SystemInfo,
+  VerificationProfile,
+  Workflow,
+  WorkflowEvent,
+  WorkflowMessage,
+  WorkflowTemplate,
+} from "./types";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -19,9 +29,12 @@ type Theme = "system" | "light" | "dark" | "sepia" | "forest" | "ocean";
 type AppFont = "system" | "serif" | "dyslexia" | "modern";
 
 const themeOptions: Array<{ value: Theme; label: string }> = [
-  { value: "system", label: "System" }, { value: "light", label: "Light" },
-  { value: "dark", label: "Dark" }, { value: "sepia", label: "Sepia" },
-  { value: "forest", label: "Forest" }, { value: "ocean", label: "Ocean" },
+  { value: "system", label: "System" },
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+  { value: "sepia", label: "Sepia" },
+  { value: "forest", label: "Forest" },
+  { value: "ocean", label: "Ocean" },
 ];
 const fontOptions: Array<{ value: AppFont; label: string; sample: string }> = [
   { value: "system", label: "System UI", sample: "Aa" },
@@ -50,16 +63,29 @@ function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
 
-const verificationOptions: Array<{ value: VerificationProfile; label: string; help: string }> = [
-  { value: "thorough", label: "Thorough", help: "More immediate checking · highest token use" },
+const verificationOptions: Array<{
+  value: VerificationProfile;
+  label: string;
+  help: string;
+}> = [
+  {
+    value: "thorough",
+    label: "Thorough",
+    help: "More immediate checking · highest token use",
+  },
   { value: "balanced", label: "Balanced", help: "Good coverage · recommended" },
-  { value: "token_saver", label: "Minimal", help: "Lightweight checking · lowest token use" },
+  {
+    value: "token_saver",
+    label: "Minimal",
+    help: "Lightweight checking · lowest token use",
+  },
 ];
 
 function identityColour(id: string): string {
   const colours = ["violet", "teal", "amber", "rose", "blue", "green"];
   let hash = 0;
-  for (const character of id) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  for (const character of id)
+    hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
   return colours[hash % colours.length]!;
 }
 
@@ -68,11 +94,21 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
-  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null);
-  const [workflowMessages, setWorkflowMessages] = useState<WorkflowMessage[]>([]);
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(
+    null,
+  );
+  const [workflowMessages, setWorkflowMessages] = useState<WorkflowMessage[]>(
+    [],
+  );
+  const [workflowEvents, setWorkflowEvents] = useState<WorkflowEvent[]>([]);
   const [showWorkflowCreate, setShowWorkflowCreate] = useState(false);
   const [workflowTask, setWorkflowTask] = useState("");
-  const [verificationProfile, setVerificationProfile] = useState<VerificationProfile>("balanced");
+  const [workflowTemplates, setWorkflowTemplates] = useState<
+    WorkflowTemplate[]
+  >([]);
+  const [workflowTemplateId, setWorkflowTemplateId] = useState("");
+  const [verificationProfile, setVerificationProfile] =
+    useState<VerificationProfile>("balanced");
   const [reviewInput, setReviewInput] = useState("");
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -86,7 +122,9 @@ export default function App() {
   const [showRegister, setShowRegister] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [showAccountSettings, setShowAccountSettings] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<"security" | "preferences">("security");
+  const [settingsTab, setSettingsTab] = useState<"security" | "preferences">(
+    "security",
+  );
   const [theme, setTheme] = useState<Theme>("system");
   const [appFont, setAppFont] = useState<AppFont>("system");
   const [user, setUser] = useState<{ username: string } | null>(null);
@@ -114,7 +152,11 @@ export default function App() {
     () => agents.find((agent) => agent.id === selectedId) ?? null,
     [agents, selectedId],
   );
-  const selectedWorkflow = useMemo(() => workflows.find((workflow) => workflow.id === selectedWorkflowId) ?? null, [workflows, selectedWorkflowId]);
+  const selectedWorkflow = useMemo(
+    () =>
+      workflows.find((workflow) => workflow.id === selectedWorkflowId) ?? null,
+    [workflows, selectedWorkflowId],
+  );
 
   const refreshAgents = useCallback(async () => {
     const { agents: next } = await api.listAgents();
@@ -134,33 +176,74 @@ export default function App() {
   }, []);
 
   const bootstrap = useCallback(async () => {
-    await Promise.all([refreshAgents(), api.system().then(setSystem), api.workflows().then(({ workflows: next }) => setWorkflows(next))]);
+    await Promise.all([
+      refreshAgents(),
+      api.system().then(setSystem),
+      api.workflows().then(({ workflows: next }) => setWorkflows(next)),
+      api
+        .workflowTemplates()
+        .then(({ templates: next }) => setWorkflowTemplates(next)),
+    ]);
   }, [refreshAgents]);
 
-  const refreshWorkflow = useCallback(async (workflowId: string) => {
-    const [workflowResult, conversationResult] = await Promise.all([api.workflow(workflowId), api.workflowConversation(workflowId)]);
-    if (mountedRef.current && selectedWorkflowId === workflowId) {
-      setWorkflows((current) => current.map((item) => item.id === workflowId ? workflowResult.workflow : item));
-      setWorkflowMessages(conversationResult.messages);
-    }
-    return workflowResult.workflow;
-  }, [selectedWorkflowId]);
+  const refreshWorkflow = useCallback(
+    async (workflowId: string) => {
+      const [workflowResult, conversationResult, eventsResult] =
+        await Promise.all([
+          api.workflow(workflowId),
+          api.workflowConversation(workflowId),
+          api.workflowEvents(workflowId),
+        ]);
+      if (mountedRef.current && selectedWorkflowId === workflowId) {
+        setWorkflows((current) =>
+          current.map((item) =>
+            item.id === workflowId ? workflowResult.workflow : item,
+          ),
+        );
+        setWorkflowMessages(conversationResult.messages);
+        setWorkflowEvents(eventsResult.events);
+      }
+      return workflowResult.workflow;
+    },
+    [selectedWorkflowId],
+  );
 
   useEffect(() => {
-    if (!selectedWorkflowId) { setWorkflowMessages([]); return; }
-    void refreshWorkflow(selectedWorkflowId).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+    if (!selectedWorkflowId) {
+      setWorkflowMessages([]);
+      return;
+    }
+    void refreshWorkflow(selectedWorkflowId).catch((reason) =>
+      setError(reason instanceof Error ? reason.message : String(reason)),
+    );
   }, [refreshWorkflow, selectedWorkflowId]);
 
   useEffect(() => {
-    if (!selectedWorkflow || !["running", "awaiting_approval"].includes(selectedWorkflow.status)) return;
+    if (
+      !selectedWorkflow ||
+      !["running", "awaiting_approval"].includes(selectedWorkflow.status)
+    )
+      return;
     let stopped = false;
     const poll = async () => {
       if (stopped || !selectedWorkflowId) return;
-      try { const workflow = await refreshWorkflow(selectedWorkflowId); if (!stopped && ["running", "awaiting_approval"].includes(workflow.status)) window.setTimeout(() => void poll(), 1000); }
-      catch (reason) { if (!stopped) setError(reason instanceof Error ? reason.message : String(reason)); }
+      try {
+        const workflow = await refreshWorkflow(selectedWorkflowId);
+        if (
+          !stopped &&
+          ["running", "awaiting_approval"].includes(workflow.status)
+        )
+          window.setTimeout(() => void poll(), 1000);
+      } catch (reason) {
+        if (!stopped)
+          setError(reason instanceof Error ? reason.message : String(reason));
+      }
     };
     const timer = window.setTimeout(() => void poll(), 1000);
-    return () => { stopped = true; window.clearTimeout(timer); };
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
   }, [refreshWorkflow, selectedWorkflow, selectedWorkflowId]);
 
   useEffect(() => {
@@ -176,8 +259,11 @@ export default function App() {
         const { user: current } = await api.me();
         if (!mountedRef.current) return;
         const preferences = await api.preferences();
-        setTheme(preferences.preferences.theme as Theme); setAppFont(preferences.preferences.font as AppFont);
-        setUser(current); setAuthRequired(false); await bootstrap();
+        setTheme(preferences.preferences.theme as Theme);
+        setAppFont(preferences.preferences.font as AppFont);
+        setUser(current);
+        setAuthRequired(false);
+        await bootstrap();
       })
       .catch(() => setAuthRequired(true));
     return () => {
@@ -275,7 +361,11 @@ export default function App() {
 
   const deleteAgent = async () => {
     if (!selected) return;
-    if (!window.confirm("Delete " + selected.name + "? Its workspace will be archived.")) {
+    if (
+      !window.confirm(
+        "Delete " + selected.name + "? Its workspace will be archived.",
+      )
+    ) {
       return;
     }
     setBusy(true);
@@ -341,10 +431,13 @@ export default function App() {
     try {
       const result = await api.login(username, password, honeypot);
       const preferences = await api.preferences();
-      setTheme(preferences.preferences.theme as Theme); setAppFont(preferences.preferences.font as AppFont);
-      setUser(result.user); await bootstrap();
+      setTheme(preferences.preferences.theme as Theme);
+      setAppFont(preferences.preferences.font as AppFont);
+      setUser(result.user);
+      await bootstrap();
       setAuthRequired(false);
-      setUsername(""); setPassword("");
+      setUsername("");
+      setPassword("");
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 401) {
         setError("Invalid username or password.");
@@ -357,56 +450,125 @@ export default function App() {
   };
 
   const register = async (event: React.FormEvent) => {
-    event.preventDefault(); setBusy(true); setError(null);
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
     try {
       const result = await api.register(username, registerPassword);
-      setUser(result.user); setAuthRequired(false); setUsername(""); setRegisterPassword(""); await bootstrap();
-    } catch (reason) { setError(reason instanceof ApiError && reason.status === 409 ? "That username is already in use." : reason instanceof Error ? reason.message : String(reason)); }
-    finally { setBusy(false); }
+      setUser(result.user);
+      setAuthRequired(false);
+      setUsername("");
+      setRegisterPassword("");
+      await bootstrap();
+    } catch (reason) {
+      setError(
+        reason instanceof ApiError && reason.status === 409
+          ? "That username is already in use."
+          : reason instanceof Error
+            ? reason.message
+            : String(reason),
+      );
+    } finally {
+      setBusy(false);
+    }
   };
 
   const updatePassword = async (event: React.FormEvent) => {
-    event.preventDefault(); setError(null);
-    try { await api.changePassword(authInput, newPassword); setAuthInput(""); setNewPassword(""); setShowAccountSettings(false); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    event.preventDefault();
+    setError(null);
+    try {
+      await api.changePassword(authInput, newPassword);
+      setAuthInput("");
+      setNewPassword("");
+      setShowAccountSettings(false);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
   };
 
   const updatePreferences = (nextTheme: Theme, nextFont: AppFont) => {
-    setTheme(nextTheme); setAppFont(nextFont); void api.savePreferences(nextTheme, nextFont);
+    setTheme(nextTheme);
+    setAppFont(nextFont);
+    void api.savePreferences(nextTheme, nextFont);
   };
 
   const createWorkflow = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!workflowTask.trim()) return;
-    setBusy(true); setError(null);
+    setBusy(true);
+    setError(null);
     try {
-      const { workflow } = await api.createWorkflow(workflowTask.trim(), verificationProfile);
+      const { workflow } = await api.createWorkflow(
+        workflowTask.trim(),
+        verificationProfile,
+        workflowTemplateId || undefined,
+      );
       setWorkflows((current) => [workflow, ...current]);
-      setSelectedWorkflowId(workflow.id); setSelectedId(null); setWorkflowTask(""); setShowWorkflowCreate(false);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
-    finally { setBusy(false); }
+      setSelectedWorkflowId(workflow.id);
+      setSelectedId(null);
+      setWorkflowTask("");
+      setWorkflowTemplateId("");
+      setShowWorkflowCreate(false);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const workflowAction = async (action: "start" | "pause" | "cancel") => {
     if (!selectedWorkflow) return;
-    setBusy(true); setError(null);
+    setBusy(true);
+    setError(null);
     try {
-      const result = action === "start" ? await api.startWorkflow(selectedWorkflow.id) : action === "pause" ? await api.pauseWorkflow(selectedWorkflow.id) : await api.cancelWorkflow(selectedWorkflow.id);
-      setWorkflows((current) => current.map((item) => item.id === result.workflow.id ? result.workflow : item));
+      const result =
+        action === "start"
+          ? await api.startWorkflow(selectedWorkflow.id)
+          : action === "pause"
+            ? await api.pauseWorkflow(selectedWorkflow.id)
+            : await api.cancelWorkflow(selectedWorkflow.id);
+      setWorkflows((current) =>
+        current.map((item) =>
+          item.id === result.workflow.id ? result.workflow : item,
+        ),
+      );
       await refreshWorkflow(result.workflow.id);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
-    finally { setBusy(false); }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const reviewStage = async (stageId: string, action: "approve" | "reject" | "revise" | "edit", value = "") => {
+  const reviewStage = async (
+    stageId: string,
+    action: "approve" | "reject" | "revise" | "edit",
+    value = "",
+  ) => {
     if (!selectedWorkflow) return;
-    setBusy(true); setError(null);
+    setBusy(true);
+    setError(null);
     try {
-      const result = action === "approve" ? await api.approveStage(selectedWorkflow.id, stageId) : action === "reject" ? await api.rejectStage(selectedWorkflow.id, stageId, value) : action === "revise" ? await api.reviseStage(selectedWorkflow.id, stageId, value) : await api.editStage(selectedWorkflow.id, stageId, value);
-      setWorkflows((current) => current.map((item) => item.id === result.workflow.id ? result.workflow : item));
+      const result =
+        action === "approve"
+          ? await api.approveStage(selectedWorkflow.id, stageId)
+          : action === "reject"
+            ? await api.rejectStage(selectedWorkflow.id, stageId, value)
+            : action === "revise"
+              ? await api.reviseStage(selectedWorkflow.id, stageId, value)
+              : await api.editStage(selectedWorkflow.id, stageId, value);
+      setReviewInput("");
+      setWorkflows((current) =>
+        current.map((item) =>
+          item.id === result.workflow.id ? result.workflow : item,
+        ),
+      );
       await refreshWorkflow(result.workflow.id);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
-    finally { setBusy(false); }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
   };
 
   if (authRequired === null) {
@@ -416,7 +578,13 @@ export default function App() {
           <div className="brand-mark">A</div>
           <span className="eyebrow">Agent Launchpad</span>
           <h1>Connecting to the control plane</h1>
-          {error ? <div className="error-banner" role="alert">{error}</div> : <Spinner />}
+          {error ? (
+            <div className="error-banner" role="alert">
+              {error}
+            </div>
+          ) : (
+            <Spinner />
+          )}
         </section>
       </main>
     );
@@ -428,19 +596,82 @@ export default function App() {
         <form className="auth-card" onSubmit={showRegister ? register : unlock}>
           <div className="brand-mark">A</div>
           <span className="eyebrow">Agent Launchpad</span>
-          <h1>{showRegister ? "Create your account" : "Sign in to Launchpad"}</h1>
-          <p>{showRegister ? "Create an account to save your agents and workspace sessions." : "Your account is identified only by a username and password."}</p>
-          {error && <div className="error-banner" role="alert">{error}</div>}
+          <h1>
+            {showRegister ? "Create your account" : "Sign in to Launchpad"}
+          </h1>
+          <p>
+            {showRegister
+              ? "Create an account to save your agents and workspace sessions."
+              : "Your account is identified only by a username and password."}
+          </p>
+          {error && (
+            <div className="error-banner" role="alert">
+              {error}
+            </div>
+          )}
           <label>
             Username
-            <input autoFocus value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required />
+            <input
+              autoFocus
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              autoComplete="username"
+              required
+            />
           </label>
-          <label>Password<input type="password" value={showRegister ? registerPassword : password} onChange={(event) => showRegister ? setRegisterPassword(event.target.value) : setPassword(event.target.value)} autoComplete={showRegister ? "new-password" : "current-password"} minLength={8} required /></label>
-          {!showRegister && <label className="trap-field" aria-hidden="true">Leave blank<input tabIndex={-1} value={honeypot} onChange={(event) => setHoneypot(event.target.value)} /></label>}
-          <button className="button button-primary" disabled={busy || !username.trim() || !(showRegister ? registerPassword : password)}>
-            {busy ? <Spinner /> : showRegister ? "Create account" : "Open Launchpad"}
+          <label>
+            Password
+            <input
+              type="password"
+              value={showRegister ? registerPassword : password}
+              onChange={(event) =>
+                showRegister
+                  ? setRegisterPassword(event.target.value)
+                  : setPassword(event.target.value)
+              }
+              autoComplete={showRegister ? "new-password" : "current-password"}
+              minLength={8}
+              required
+            />
+          </label>
+          {!showRegister && (
+            <label className="trap-field" aria-hidden="true">
+              Leave blank
+              <input
+                tabIndex={-1}
+                value={honeypot}
+                onChange={(event) => setHoneypot(event.target.value)}
+              />
+            </label>
+          )}
+          <button
+            className="button button-primary"
+            disabled={
+              busy ||
+              !username.trim() ||
+              !(showRegister ? registerPassword : password)
+            }
+          >
+            {busy ? (
+              <Spinner />
+            ) : showRegister ? (
+              "Create account"
+            ) : (
+              "Open Launchpad"
+            )}
           </button>
-          <button type="button" className="auth-link" onClick={() => { setShowRegister(v => !v); setError(null); }}>{showRegister ? "Already have an account? Sign in" : "Create account"}</button>
+          <button
+            type="button"
+            className="auth-link"
+            onClick={() => {
+              setShowRegister((v) => !v);
+              setError(null);
+            }}
+          >
+            {showRegister
+              ? "Already have an account? Sign in"
+              : "Create account"}
+          </button>
         </form>
       </main>
     );
@@ -478,11 +709,18 @@ export default function App() {
         <nav className="agent-list">
           {agents.map((agent) => (
             <button
-              className={"agent-card " + (agent.id === selectedId ? "selected" : "")}
+              className={
+                "agent-card " + (agent.id === selectedId ? "selected" : "")
+              }
               key={agent.id}
-              onClick={() => setSelectedId(agent.id)}
+              onClick={() => {
+                setSelectedId(agent.id);
+                setSelectedWorkflowId(null);
+              }}
             >
-              <div className="agent-avatar">{agent.name.slice(0, 1).toUpperCase()}</div>
+              <div className="agent-avatar">
+                {agent.name.slice(0, 1).toUpperCase()}
+              </div>
               <div className="agent-card-copy">
                 <strong>{agent.name}</strong>
                 <span>{agent.description || "Coding Agent"}</span>
@@ -498,16 +736,37 @@ export default function App() {
           )}
         </nav>
 
-        <div className="sidebar-label workflow-label"><span>Workflows</span><span>{workflows.length}</span></div>
+        <div className="sidebar-label workflow-label">
+          <span>Workflows</span>
+          <span>{workflows.length}</span>
+        </div>
         <nav className="agent-list workflow-list" aria-label="Workflows">
           {workflows.map((workflow) => (
-            <button className={"agent-card " + (workflow.id === selectedWorkflowId ? "selected" : "")} key={workflow.id} onClick={() => { setSelectedWorkflowId(workflow.id); setSelectedId(null); }}>
+            <button
+              className={
+                "agent-card " +
+                (workflow.id === selectedWorkflowId ? "selected" : "")
+              }
+              key={workflow.id}
+              onClick={() => {
+                setSelectedWorkflowId(workflow.id);
+                setSelectedId(null);
+              }}
+            >
               <div className="agent-avatar workflow-avatar">◇</div>
-              <div className="agent-card-copy"><strong>{workflow.taskDescription}</strong><span>{workflow.status.replace("_", " ")}</span></div>
+              <div className="agent-card-copy">
+                <strong>{workflow.taskDescription}</strong>
+                <span>{workflow.status.replace("_", " ")}</span>
+              </div>
             </button>
           ))}
         </nav>
-        <button className="button button-ghost workflow-create" onClick={() => setShowWorkflowCreate(true)}>＋ New workflow</button>
+        <button
+          className="button button-ghost workflow-create"
+          onClick={() => setShowWorkflowCreate(true)}
+        >
+          ＋ New workflow
+        </button>
 
         <div className="runtime-card">
           <span className="eyebrow">Runtime</span>
@@ -517,7 +776,43 @@ export default function App() {
             {system?.containerEngine ? " · " + system.containerEngine : ""}
           </span>
         </div>
-        {user && <div className="profile-area"><button className="profile-button" aria-label="Open profile settings" onClick={() => setShowProfile(v => !v)}><span className="profile-icon">{user.username.slice(0, 1).toUpperCase()}</span><span>{user.username}</span><span>⌃</span></button>{showProfile && <div className="profile-menu"><strong>{user.username}</strong><button onClick={() => { setShowProfile(false); setShowAccountSettings(true); }}>Settings</button><button onClick={async () => { await api.logout(); setUser(null); setAuthRequired(true); }}>Sign out</button></div>}</div>}
+        {user && (
+          <div className="profile-area">
+            <button
+              className="profile-button"
+              aria-label="Open profile settings"
+              onClick={() => setShowProfile((v) => !v)}
+            >
+              <span className="profile-icon">
+                {user.username.slice(0, 1).toUpperCase()}
+              </span>
+              <span>{user.username}</span>
+              <span>⌃</span>
+            </button>
+            {showProfile && (
+              <div className="profile-menu">
+                <strong>{user.username}</strong>
+                <button
+                  onClick={() => {
+                    setShowProfile(false);
+                    setShowAccountSettings(true);
+                  }}
+                >
+                  Settings
+                </button>
+                <button
+                  onClick={async () => {
+                    await api.logout();
+                    setUser(null);
+                    setAuthRequired(true);
+                  }}
+                >
+                  Sign out
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </aside>
 
       <main className="main">
@@ -547,18 +842,231 @@ export default function App() {
         {selectedWorkflow ? (
           <>
             <header className="agent-header workflow-header">
-              <div><span className="eyebrow">Workflow chat</span><h1>{selectedWorkflow.taskDescription}</h1><p>{selectedWorkflow.stages.length} Agents · {selectedWorkflow.verification.profile === "thorough" ? "Thorough" : selectedWorkflow.verification.profile === "token_saver" ? "Minimal" : "Balanced"} verification</p></div>
+              <div>
+                <span className="eyebrow">Workflow chat</span>
+                <h1>{selectedWorkflow.taskDescription}</h1>
+                <p>
+                  {selectedWorkflow.stages.length} Agents ·{" "}
+                  {selectedWorkflow.verification.profile === "thorough"
+                    ? "Thorough"
+                    : selectedWorkflow.verification.profile === "token_saver"
+                      ? "Minimal"
+                      : "Balanced"}{" "}
+                  verification
+                </p>
+              </div>
               <div className="header-actions">
-                {selectedWorkflow.status === "paused" || selectedWorkflow.status === "draft" ? <button className="button button-primary" onClick={() => void workflowAction("start")} disabled={busy}>Start / Resume</button> : null}
-                {selectedWorkflow.status === "running" ? <button className="button button-ghost" onClick={() => void workflowAction("pause")} disabled={busy}>Pause</button> : null}
-                {!['completed', 'cancelled', 'failed'].includes(selectedWorkflow.status) ? <button className="button button-danger" onClick={() => void workflowAction("cancel")} disabled={busy}>Cancel</button> : null}
+                {selectedWorkflow.status === "paused" ||
+                selectedWorkflow.status === "draft" ? (
+                  <button
+                    className="button button-primary"
+                    onClick={() => void workflowAction("start")}
+                    disabled={busy}
+                  >
+                    Start / Resume
+                  </button>
+                ) : null}
+                {selectedWorkflow.status === "running" ? (
+                  <button
+                    className="button button-ghost"
+                    onClick={() => void workflowAction("pause")}
+                    disabled={busy}
+                  >
+                    Pause
+                  </button>
+                ) : null}
+                {selectedWorkflow.status === "completed" ? <button className="button button-primary" disabled={busy} onClick={async () => { const task = window.prompt("What should the next workflow iteration add or change?"); if (!task?.trim()) return; setBusy(true); try { const result = await api.continueWorkflow(selectedWorkflow.id, task.trim(), selectedWorkflow.templateId); setWorkflows((current) => current.map((item) => item.id === result.workflow.id ? result.workflow : item)); await refreshWorkflow(result.workflow.id); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } finally { setBusy(false); } }}>Continue workflow</button> : null}
+                {!["completed", "cancelled", "failed"].includes(
+                  selectedWorkflow.status,
+                ) ? (
+                  <button
+                    className="button button-danger"
+                    onClick={() => void workflowAction("cancel")}
+                    disabled={busy}
+                  >
+                    Cancel
+                  </button>
+                ) : null}
               </div>
             </header>
             <section className="playground workflow-playground">
-              <div className="playground-topbar"><div><span className="eyebrow">Conversation</span><h2>Agents working together</h2></div><div className="session-info"><span className="pulse" />{selectedWorkflow.status.replace("_", " ")}</div></div>
+              <div className="playground-topbar">
+                <div>
+                  <span className="eyebrow">Conversation</span>
+                  <h2>Agents working together</h2>
+                </div>
+                <div className="session-info">
+                  <span className="pulse" />
+                  {selectedWorkflow.status.replace("_", " ")}
+                </div>
+              </div>
+              <div
+                className="workflow-stage-strip"
+                aria-label="Workflow stages"
+              >
+                {selectedWorkflow.stages
+                  .filter((stage) => stage.kind === "planned")
+                  .map((stage) => (
+                    <span
+                      className={`stage-chip stage-${stage.status}`}
+                      key={stage.id}
+                    >
+                      {stage.name}
+                      <small>{stage.status.replace("_", " ")}</small>
+                    </span>
+                  ))}
+              </div>
               <div className="messages workflow-messages">
-                {workflowMessages.length === 0 ? <div className="welcome"><div className="welcome-orbit"><div>⌁</div></div><h3>The conversation will appear here</h3><p>Each Agent will take a turn and their replies will be labelled clearly.</p></div> : workflowMessages.map((message) => <article className={"message message-assistant workflow-message identity-" + identityColour(message.agentId)} key={message.id}><div className="workflow-avatar-small">{message.agentName.slice(0, 1).toUpperCase()}</div><div className="workflow-message-content"><div className="message-meta"><strong>{message.agentName}</strong><span>{message.personaId ?? "Agent"} · {message.stageName} · {formatTime(message.createdAt)}</span></div><div className="message-body">{message.content}</div>{message.stageKind === "repair" ? <span className="repair-label">Repair response</span> : null}</div></article>)}
-                {selectedWorkflow.stages.filter((stage) => stage.status === "awaiting_approval").map((stage) => <div className="review-panel" key={stage.id}><div><span className="eyebrow">Human review</span><strong>{stage.name} needs your decision</strong><p>Approve it, edit the response, reject it, or describe what should change.</p></div><textarea value={reviewInput} onChange={(event) => setReviewInput(event.target.value)} placeholder="Optional feedback or requested changes…" rows={2} /><div className="review-actions"><button className="button button-primary" disabled={busy} onClick={() => void reviewStage(stage.id, "approve")}>Approve</button><button className="button button-ghost" disabled={busy || !reviewInput.trim()} onClick={() => void reviewStage(stage.id, "edit", reviewInput)}>Edit response</button><button className="button button-ghost" disabled={busy || !reviewInput.trim()} onClick={() => void reviewStage(stage.id, "revise", reviewInput)}>Request changes</button><button className="button button-danger" disabled={busy || !reviewInput.trim()} onClick={() => void reviewStage(stage.id, "reject", reviewInput)}>Reject</button></div></div>)}
+                {workflowMessages.length === 0 ? (
+                  <div className="welcome">
+                    <div className="welcome-orbit">
+                      <div>⌁</div>
+                    </div>
+                    <h3>The conversation will appear here</h3>
+                    <p>Each stage will report its progress and replies here.</p>
+                  </div>
+                ) : (
+                  workflowMessages.map((message) => (
+                    <article
+                      className={`message message-${message.role} workflow-message ${message.role === "assistant" ? "identity-" + identityColour(message.agentId) : ""}`}
+                      key={message.id}
+                    >
+                      <div
+                        className={
+                          message.role === "assistant"
+                            ? "workflow-avatar-small"
+                            : "workflow-avatar-small user-avatar"
+                        }
+                      >
+                        {message.role === "assistant"
+                          ? message.agentName.slice(0, 1).toUpperCase()
+                          : "Y"}
+                      </div>
+                      <div className="workflow-message-content">
+                        <div className="message-meta">
+                          <strong>
+                            {message.role === "user"
+                              ? "You"
+                              : message.agentName}
+                          </strong>
+                          <span>
+                            {message.role === "assistant"
+                              ? `${message.personaId ?? "Agent"} · ${message.stageName} · `
+                              : "Workflow input · "}
+                            {formatTime(message.createdAt)}
+                          </span>
+                        </div>
+                        <div className="message-body">{message.content}</div>
+                      </div>
+                    </article>
+                  ))
+                )}
+                {selectedWorkflow.stages
+                  .filter((stage) => stage.status === "running")
+                  .map((stage) => (
+                    <article
+                      className="workflow-activity thinking"
+                      key={`thinking-${stage.id}`}
+                    >
+                      <Spinner />
+                      <strong>{stage.name} is thinking…</strong>
+                      <span>Working on the current stage</span>
+                    </article>
+                  ))}
+                {workflowEvents
+                  .slice(-3)
+                  .filter(
+                    (event) =>
+                      event.event.includes("failed") ||
+                      event.event.includes("retry") ||
+                      event.event === "workflow_recovered",
+                  )
+                  .map((event) => (
+                    <article className="workflow-activity" key={event.id}>
+                      <strong>{event.event.replaceAll("_", " ")}</strong>
+                      <span>{formatTime(event.timestamp)}</span>
+                    </article>
+                  ))}
+                {selectedWorkflow.stages
+                  .filter((stage) => stage.status === "awaiting_approval")
+                  .map((stage) => (
+                    <div className="review-panel" key={stage.id}>
+                      <div>
+                        <span className="eyebrow">Human review</span>
+                        <strong>{stage.name} needs your decision</strong>
+                        <p>
+                          Approve the artifact to continue, or revise it with
+                          specific feedback.
+                        </p>
+                      </div>
+                      <textarea
+                        value={reviewInput}
+                        onChange={(event) => setReviewInput(event.target.value)}
+                        placeholder="Tell the agent what to change…"
+                        rows={2}
+                      />
+                      <div className="review-actions">
+                        <button
+                          className="button button-primary"
+                          disabled={busy}
+                          onClick={() => void reviewStage(stage.id, "approve")}
+                        >
+                          Approve
+                        </button>
+                        <button
+                          className="button button-ghost"
+                          disabled={busy || !reviewInput.trim()}
+                          onClick={() =>
+                            void reviewStage(stage.id, "revise", reviewInput)
+                          }
+                        >
+                          Revise with feedback
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                {selectedWorkflow.stages
+                  .filter((stage) => stage.status === "failed")
+                  .map((stage) => (
+                    <div
+                      className="review-panel failure-panel"
+                      key={`failed-${stage.id}`}
+                    >
+                      <strong>{stage.name} failed</strong>
+                      <p>{stage.lastError}</p>
+                      <button
+                        className="button button-primary"
+                        disabled={busy}
+                        onClick={async () => {
+                          setBusy(true);
+                          try {
+                            const result = await api.retryStage(
+                              selectedWorkflow.id,
+                              stage.id,
+                            );
+                            setWorkflows((current) =>
+                              current.map((item) =>
+                                item.id === result.workflow.id
+                                  ? result.workflow
+                                  : item,
+                              ),
+                            );
+                            await refreshWorkflow(result.workflow.id);
+                          } catch (reason) {
+                            setError(
+                              reason instanceof Error
+                                ? reason.message
+                                : String(reason),
+                            );
+                          } finally {
+                            setBusy(false);
+                          }
+                        }}
+                      >
+                        Retry stage
+                      </button>
+                    </div>
+                  ))}
               </div>
             </section>
           </>
@@ -570,7 +1078,10 @@ export default function App() {
                   <h1>{selected.name}</h1>
                   <StatusPill status={selected.status} />
                 </div>
-                <p>{selected.description || "A Codex coding Agent in an isolated workspace."}</p>
+                <p>
+                  {selected.description ||
+                    "A Codex coding Agent in an isolated workspace."}
+                </p>
               </div>
               <div className="header-actions">
                 <button
@@ -604,14 +1115,18 @@ export default function App() {
                     <span className="eyebrow">Agent configuration</span>
                     <h2>Instructions and identity</h2>
                   </div>
-                  <button type="button" onClick={() => setShowSettings(false)}>×</button>
+                  <button type="button" onClick={() => setShowSettings(false)}>
+                    ×
+                  </button>
                 </div>
                 <div className="form-grid">
                   <label>
                     Name
                     <input
                       value={form.name}
-                      onChange={(event) => setForm({ ...form, name: event.target.value })}
+                      onChange={(event) =>
+                        setForm({ ...form, name: event.target.value })
+                      }
                       required
                       maxLength={80}
                     />
@@ -667,8 +1182,8 @@ export default function App() {
                     </div>
                     <h3>What should {selected.name} build?</h3>
                     <p>
-                      The Agent can inspect files, write code, run commands, and continue the
-                      same Codex session across messages.
+                      The Agent can inspect files, write code, run commands, and
+                      continue the same Codex session across messages.
                     </p>
                     <div className="prompt-grid">
                       {starterPrompts.map((item) => (
@@ -681,27 +1196,33 @@ export default function App() {
                   </div>
                 ) : (
                   messages.map((message) => (
-                    <article className={"message message-" + message.role} key={message.id}>
+                    <article
+                      className={"message message-" + message.role}
+                      key={message.id}
+                    >
                       <div className="message-meta">
-                        <strong>{message.role === "user" ? "You" : selected.name}</strong>
+                        <strong>
+                          {message.role === "user" ? "You" : selected.name}
+                        </strong>
                         <span>{formatTime(message.createdAt)}</span>
                       </div>
                       <div className="message-body">{message.content}</div>
                     </article>
                   ))
                 )}
-                {activeRun && ["queued", "running"].includes(activeRun.status) && (
-                  <article className="message message-assistant thinking">
-                    <div className="message-meta">
-                      <strong>{selected.name}</strong>
-                      <span>working in the Agent workspace</span>
-                    </div>
-                    <div className="thinking-row">
-                      <Spinner />
-                      Codex is reading, editing, or running commands…
-                    </div>
-                  </article>
-                )}
+                {activeRun &&
+                  ["queued", "running"].includes(activeRun.status) && (
+                    <article className="message message-assistant thinking">
+                      <div className="message-meta">
+                        <strong>{selected.name}</strong>
+                        <span>working in the Agent workspace</span>
+                      </div>
+                      <div className="thinking-row">
+                        <Spinner />
+                        Codex is reading, editing, or running commands…
+                      </div>
+                    </article>
+                  )}
                 {activeRun?.status === "failed" && (
                   <article className="run-error">
                     <strong>Run failed</strong>
@@ -729,13 +1250,15 @@ export default function App() {
                   disabled={
                     selected.status === "stopped" ||
                     selected.status === "busy" ||
-                    activeRun != null && ["queued", "running"].includes(activeRun.status)
+                    (activeRun != null &&
+                      ["queued", "running"].includes(activeRun.status))
                   }
                   rows={3}
                 />
                 <div className="composer-footer">
                   <span>
-                    Enter to send · Shift + Enter for newline · {system?.codexSandboxMode ?? "checking sandbox"}
+                    Enter to send · Shift + Enter for newline ·{" "}
+                    {system?.codexSandboxMode ?? "checking sandbox"}
                   </span>
                   <button
                     className="send-button"
@@ -743,7 +1266,8 @@ export default function App() {
                       !prompt.trim() ||
                       selected.status === "stopped" ||
                       selected.status === "busy" ||
-                      (activeRun != null && ["queued", "running"].includes(activeRun.status))
+                      (activeRun != null &&
+                        ["queued", "running"].includes(activeRun.status))
                     }
                     aria-label="Send message"
                   >
@@ -758,7 +1282,10 @@ export default function App() {
             <div className="no-agent-art">A</div>
             <span className="eyebrow">Agent Launchpad</span>
             <h1>Your runtime is ready for an Agent.</h1>
-            <p>Create a workspace, give Codex a job, and continue the conversation here.</p>
+            <p>
+              Create a workspace, give Codex a job, and continue the
+              conversation here.
+            </p>
             <button
               className="button button-primary"
               onClick={() => {
@@ -772,57 +1299,244 @@ export default function App() {
         )}
       </main>
 
-      {showWorkflowCreate && <div className="modal-backdrop" onMouseDown={() => setShowWorkflowCreate(false)}><form className="modal" onSubmit={createWorkflow} onMouseDown={(event) => event.stopPropagation()}><div className="modal-heading"><div><span className="eyebrow">New workflow</span><h2>Start a group chat</h2><p>Agents will take turns helping with this task.</p></div><button type="button" onClick={() => setShowWorkflowCreate(false)}>×</button></div><label>What should the Agents do?<textarea autoFocus value={workflowTask} onChange={(event) => setWorkflowTask(event.target.value)} rows={5} maxLength={50000} required placeholder="Describe the task…" /></label><div className="preference-group"><span className="preference-label">Verification and token usage</span><div className="verification-options" role="group" aria-label="Verification and token usage">{verificationOptions.map((option) => <button key={option.value} type="button" className={`quick-option ${verificationProfile === option.value ? "selected" : ""}`} aria-pressed={verificationProfile === option.value} onClick={() => setVerificationProfile(option.value)}><span><strong>{option.label}</strong><small>{option.help}</small></span></button>)}</div></div><div className="modal-footer"><button type="button" className="button button-ghost" onClick={() => setShowWorkflowCreate(false)}>Cancel</button><button className="button button-primary" disabled={busy || !workflowTask.trim()}>{busy ? <Spinner /> : "Create workflow"}</button></div></form></div>}
+      {showWorkflowCreate && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={() => setShowWorkflowCreate(false)}
+        >
+          <form
+            className="modal"
+            onSubmit={createWorkflow}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="modal-heading">
+              <div>
+                <span className="eyebrow">New workflow</span>
+                <h2>Start a group chat</h2>
+                <p>Agents will take turns helping with this task.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowWorkflowCreate(false)}
+              >
+                ×
+              </button>
+            </div>
+            <label>
+              What should the Agents do?
+              <textarea
+                autoFocus
+                value={workflowTask}
+                onChange={(event) => setWorkflowTask(event.target.value)}
+                rows={5}
+                maxLength={50000}
+                required
+                placeholder="Describe the task…"
+              />
+            </label>
+            <label>
+              Workflow template
+              <select value={workflowTemplateId} onChange={(event) => setWorkflowTemplateId(event.target.value)}>
+                <option value="">Auto-plan from task</option>
+                {workflowTemplates.map((template) => <option key={template.id} value={template.id}>{template.displayName} — {template.description}</option>)}
+              </select>
+            </label>
+            <div className="preference-group">
+              <span className="preference-label">
+                Verification and token usage
+              </span>
+              <div
+                className="verification-options"
+                role="group"
+                aria-label="Verification and token usage"
+              >
+                {verificationOptions.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className={`quick-option ${verificationProfile === option.value ? "selected" : ""}`}
+                    aria-pressed={verificationProfile === option.value}
+                    onClick={() => setVerificationProfile(option.value)}
+                  >
+                    <span>
+                      <strong>{option.label}</strong>
+                      <small>{option.help}</small>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="button button-ghost"
+                onClick={() => setShowWorkflowCreate(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="button button-primary"
+                disabled={busy || !workflowTask.trim()}
+              >
+                {busy ? <Spinner /> : "Create workflow"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {showAccountSettings && user && (
-        <div className="modal-backdrop" onMouseDown={() => setShowAccountSettings(false)}>
-          <section className="account-settings-modal" onMouseDown={(event) => event.stopPropagation()} aria-labelledby="account-settings-title">
+        <div
+          className="modal-backdrop"
+          onMouseDown={() => setShowAccountSettings(false)}
+        >
+          <section
+            className="account-settings-modal"
+            onMouseDown={(event) => event.stopPropagation()}
+            aria-labelledby="account-settings-title"
+          >
             <div className="modal-heading">
               <div>
                 <span className="eyebrow">Account</span>
                 <h2 id="account-settings-title">Settings</h2>
                 <p>Manage your Launchpad account and preferences.</p>
               </div>
-              <button type="button" aria-label="Close settings" onClick={() => setShowAccountSettings(false)}>×</button>
+              <button
+                type="button"
+                aria-label="Close settings"
+                onClick={() => setShowAccountSettings(false)}
+              >
+                ×
+              </button>
             </div>
             <div className="account-settings-body">
               <nav className="settings-nav" aria-label="Settings sections">
-                <button className={`settings-nav-item ${settingsTab === "security" ? "active" : ""}`} type="button" onClick={() => setSettingsTab("security")}>Security</button>
-                <button className={`settings-nav-item ${settingsTab === "preferences" ? "active" : ""}`} type="button" onClick={() => setSettingsTab("preferences")}>Preferences</button>
+                <button
+                  className={`settings-nav-item ${settingsTab === "security" ? "active" : ""}`}
+                  type="button"
+                  onClick={() => setSettingsTab("security")}
+                >
+                  Security
+                </button>
+                <button
+                  className={`settings-nav-item ${settingsTab === "preferences" ? "active" : ""}`}
+                  type="button"
+                  onClick={() => setSettingsTab("preferences")}
+                >
+                  Preferences
+                </button>
               </nav>
-              {settingsTab === "security" ? <div className="settings-section">
-                <span className="eyebrow">Security</span>
-                <h3>Change password</h3>
-                <p className="settings-help">Use a strong password with at least 8 characters.</p>
-                <form onSubmit={updatePassword}>
-                  <label>Current password<input autoFocus type="password" value={authInput} onChange={(event) => setAuthInput(event.target.value)} autoComplete="current-password" required /></label>
-                  <label>New password<input type="password" placeholder="8+ characters" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} autoComplete="new-password" minLength={8} required /></label>
-                  <div className="modal-footer"><button type="button" className="button button-ghost" onClick={() => setShowAccountSettings(false)}>Cancel</button><button className="button button-primary" disabled={busy}>Save password</button></div>
-                </form>
-              </div> : <div className="settings-section">
-                <span className="eyebrow">Preferences</span>
-                <h3>Personalize your workspace</h3>
-                <p className="settings-help">Choose a comfortable theme and reading font. Changes apply instantly.</p>
-                <div className="preference-group">
-                  <span className="preference-label">Theme</span>
-                  <div className="quick-options theme-options" role="group" aria-label="Theme">
-                    {themeOptions.map((option) => <button key={option.value} type="button" className={`quick-option ${theme === option.value ? "selected" : ""}`} aria-pressed={theme === option.value} onClick={() => updatePreferences(option.value, appFont)}><span className={`theme-swatch theme-${option.value}`} />{option.label}</button>)}
+              {settingsTab === "security" ? (
+                <div className="settings-section">
+                  <span className="eyebrow">Security</span>
+                  <h3>Change password</h3>
+                  <p className="settings-help">
+                    Use a strong password with at least 8 characters.
+                  </p>
+                  <form onSubmit={updatePassword}>
+                    <label>
+                      Current password
+                      <input
+                        autoFocus
+                        type="password"
+                        value={authInput}
+                        onChange={(event) => setAuthInput(event.target.value)}
+                        autoComplete="current-password"
+                        required
+                      />
+                    </label>
+                    <label>
+                      New password
+                      <input
+                        type="password"
+                        placeholder="8+ characters"
+                        value={newPassword}
+                        onChange={(event) => setNewPassword(event.target.value)}
+                        autoComplete="new-password"
+                        minLength={8}
+                        required
+                      />
+                    </label>
+                    <div className="modal-footer">
+                      <button
+                        type="button"
+                        className="button button-ghost"
+                        onClick={() => setShowAccountSettings(false)}
+                      >
+                        Cancel
+                      </button>
+                      <button className="button button-primary" disabled={busy}>
+                        Save password
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              ) : (
+                <div className="settings-section">
+                  <span className="eyebrow">Preferences</span>
+                  <h3>Personalize your workspace</h3>
+                  <p className="settings-help">
+                    Choose a comfortable theme and reading font. Changes apply
+                    instantly.
+                  </p>
+                  <div className="preference-group">
+                    <span className="preference-label">Theme</span>
+                    <div
+                      className="quick-options theme-options"
+                      role="group"
+                      aria-label="Theme"
+                    >
+                      {themeOptions.map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          className={`quick-option ${theme === option.value ? "selected" : ""}`}
+                          aria-pressed={theme === option.value}
+                          onClick={() =>
+                            updatePreferences(option.value, appFont)
+                          }
+                        >
+                          <span
+                            className={`theme-swatch theme-${option.value}`}
+                          />
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="preference-group">
+                    <span className="preference-label">Font</span>
+                    <div
+                      className="quick-options font-options"
+                      role="group"
+                      aria-label="Font"
+                    >
+                      {fontOptions.map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          className={`quick-option font-${option.value} ${appFont === option.value ? "selected" : ""}`}
+                          aria-pressed={appFont === option.value}
+                          onClick={() => updatePreferences(theme, option.value)}
+                        >
+                          <span className="font-sample">{option.sample}</span>
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
-                <div className="preference-group">
-                  <span className="preference-label">Font</span>
-                  <div className="quick-options font-options" role="group" aria-label="Font">
-                    {fontOptions.map((option) => <button key={option.value} type="button" className={`quick-option font-${option.value} ${appFont === option.value ? "selected" : ""}`} aria-pressed={appFont === option.value} onClick={() => updatePreferences(theme, option.value)}><span className="font-sample">{option.sample}</span>{option.label}</button>)}
-                  </div>
-                </div>
-              </div>}
+              )}
             </div>
           </section>
         </div>
       )}
 
       {showCreate && (
-        <div className="modal-backdrop" onMouseDown={() => setShowCreate(false)}>
+        <div
+          className="modal-backdrop"
+          onMouseDown={() => setShowCreate(false)}
+        >
           <form
             className="modal"
             onSubmit={createAgent}
@@ -832,9 +1546,14 @@ export default function App() {
               <div>
                 <span className="eyebrow">New workspace</span>
                 <h2>Create an Agent</h2>
-                <p>Each Agent gets a persistent folder and a resumable Codex session.</p>
+                <p>
+                  Each Agent gets a persistent folder and a resumable Codex
+                  session.
+                </p>
               </div>
-              <button type="button" onClick={() => setShowCreate(false)}>×</button>
+              <button type="button" onClick={() => setShowCreate(false)}>
+                ×
+              </button>
             </div>
             <label>
               Name
@@ -842,7 +1561,9 @@ export default function App() {
                 autoFocus
                 placeholder="Frontend Builder"
                 value={form.name}
-                onChange={(event) => setForm({ ...form, name: event.target.value })}
+                onChange={(event) =>
+                  setForm({ ...form, name: event.target.value })
+                }
                 required
                 maxLength={80}
               />

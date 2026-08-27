@@ -27,13 +27,18 @@ describe("WorkflowService", () => {
     expect(workflows.conversation(workflow.id).every((message) => message.agentName && message.stageId)).toBe(true);
   });
 
-  it("inserts repair stages for a revision prompt", async () => {
+  it("reuses the producing worker for a revision prompt", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "workflow-repair-test-")); roots.push(root);
     const config = loadConfig({ NODE_ENV: "test", APP_DATA_DIR: path.join(root, "data"), AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"), CODEX_HOME: path.join(root, "codex"), ARK_API_KEY: "key", ARK_MODEL: "model" });
     const store = new JsonStore(path.join(root, "data", "db.json")); const agents = new AgentService(config, store, new WorkspaceManager(config.workspaceRoot), new FakeRunner()); await agents.initialize(); const workflows = new WorkflowService(store, agents);
     const workflow = await workflows.create({ taskDescription: "draft" }); await workflows.start(workflow.id); await expect.poll(() => workflows.get(workflow.id).stages[0]?.status).toBe("awaiting_approval");
-    await workflows.revise(workflow.id, workflows.get(workflow.id).stages[0]!.id, "make it shorter"); const updated = workflows.get(workflow.id);
-    expect(updated.stages.filter((stage) => stage.kind === "repair")).toHaveLength(3); expect(store.snapshot().repairGroups[0]?.trigger).toBe("human_prompt");
+    const stage = workflows.get(workflow.id).stages[0]!; const workerId = stage.agentId;
+    await workflows.revise(workflow.id, stage.id, "make it shorter"); const updated = workflows.get(workflow.id);
+    expect(updated.stages.filter((item) => item.kind === "repair")).toHaveLength(0);
+    expect(updated.stages[0]?.agentId).toBe(workerId);
+    expect(store.snapshot().agents).toHaveLength(updated.stages.length);
+    expect(agents.listAgents()).toHaveLength(0);
+    expect(store.snapshot().workflowEvents.some((event) => event.event === "human_revise")).toBe(true);
   });
 
   it("recovers running workflows as paused", async () => {

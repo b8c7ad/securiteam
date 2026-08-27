@@ -142,7 +142,9 @@ export async function createApp(
   const feedbackBody = z.object({ feedback: z.string().trim().min(1).max(50_000) });
   const revisionBody = z.object({ prompt: z.string().trim().min(1).max(50_000) });
   const editBody = z.object({ content: z.unknown() });
+  const continueBody = z.object({ taskDescription: z.string().trim().min(1).max(50_000), templateId: z.string().optional() });
   if (workflows) {
+    app.get("/api/workflows/templates", async () => ({ templates: workflows.templates() }));
     app.get("/api/workflows", async () => ({ workflows: workflows.list() }));
     app.post("/api/workflows", async (request, reply) => { const body = workflowBody.parse(request.body); const workflow = body.templateId ? await workflows.create(body) : await workflows.createFromTask(body); return reply.code(201).send({ workflow }); });
     app.get("/api/workflows/:id", async (request) => ({ workflow: workflows.get(workflowIdParams.parse(request.params).id) }));
@@ -151,6 +153,8 @@ export async function createApp(
     app.post("/api/workflows/:id/start", async (request) => ({ workflow: await workflows.start(workflowIdParams.parse(request.params).id) }));
     app.post("/api/workflows/:id/pause", async (request) => ({ workflow: await workflows.pause(workflowIdParams.parse(request.params).id) }));
     app.post("/api/workflows/:id/cancel", async (request) => ({ workflow: await workflows.cancel(workflowIdParams.parse(request.params).id) }));
+    app.post("/api/workflows/:id/continue", async (request) => ({ workflow: await workflows.continue(workflowIdParams.parse(request.params).id, continueBody.parse(request.body).taskDescription, continueBody.parse(request.body).templateId) }));
+    app.post("/api/workflows/:id/stages/:stageId/retry", async (request) => { const p = stageParams.parse(request.params); return { workflow: await workflows.retry(p.id, p.stageId) }; });
     app.get("/api/workflows/:id/history", async (request) => ({ history: workflows.history(workflowIdParams.parse(request.params).id) }));
     app.post("/api/workflows/:id/stages/:stageId/approve", async (request) => { const p = stageParams.parse(request.params); return { workflow: await workflows.approve(p.id, p.stageId) }; });
     app.post("/api/workflows/:id/stages/:stageId/reject", async (request) => { const p = stageParams.parse(request.params); return { workflow: await workflows.reject(p.id, p.stageId, feedbackBody.parse(request.body).feedback) }; });

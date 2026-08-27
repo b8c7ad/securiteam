@@ -1,4 +1,5 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
+export type AgentVisibility = "standalone" | "internal";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type WorkflowStatus = "draft" | "running" | "paused" | "awaiting_approval" | "completed" | "failed" | "cancelled";
 export type StageStatus = "pending" | "running" | "awaiting_approval" | "approved" | "rejected" | "completed" | "skipped" | "failed";
@@ -10,6 +11,7 @@ export interface Agent {
   description: string;
   instructions: string;
   status: AgentStatus;
+  visibility: AgentVisibility;
   workspacePath: string;
   codexThreadId: string | null;
   lastError: string | null;
@@ -66,6 +68,8 @@ export interface WorkflowStage {
   attempt: number;
   maxAttempts: number;
   lastError?: string;
+  taskDescription?: string;
+  iteration?: number;
 }
 
 export interface Workflow {
@@ -74,9 +78,12 @@ export interface Workflow {
   stages: WorkflowStage[];
   status: WorkflowStatus;
   verification: { profile: VerificationProfile; maxAttempts: number; maxRepairGroups: number };
+  templateId?: string;
   createdAt: string;
   updatedAt: string;
+  iteration?: number;
 }
+export interface WorkflowTemplate { id: string; displayName: string; description: string; stages: Array<{ name: string; personaId: string }> }
 
 export interface WorkflowMessage extends Message {
   agentName: string;

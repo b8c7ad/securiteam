@@ -25,7 +25,7 @@ export class WorkspaceManager {
   }
 
   async create(agent: Agent): Promise<void> {
-    await mkdir(agent.workspacePath, { recursive: false });
+    await mkdir(agent.workspacePath, { recursive: true });
     await this.writeInstructions(agent);
     await writeFile(
       path.join(agent.workspacePath, ".gitignore"),

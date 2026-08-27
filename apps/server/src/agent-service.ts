@@ -12,6 +12,7 @@ import type {
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import path from "node:path";
 
 const now = () => new Date().toISOString();
 
@@ -49,7 +50,8 @@ export class AgentService {
   listAgents(): Agent[] {
     return this.store
       .snapshot()
-      .agents.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+      .agents.filter((agent) => agent.visibility !== "internal")
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
   getAgent(id: string): Agent {
@@ -69,7 +71,8 @@ export class AgentService {
       description: input.description?.trim() ?? "",
       instructions: input.instructions?.trim() ?? "",
       status: "ready",
-      workspacePath: this.workspaces.workspacePath(id),
+      visibility: input.visibility ?? "standalone",
+      workspacePath: input.workspacePath ?? this.workspaces.workspacePath(id),
       codexThreadId: null,
       lastError: null,
       createdAt: timestamp,
@@ -78,6 +81,10 @@ export class AgentService {
     await this.workspaces.create(agent);
     await this.store.mutate((database) => database.agents.push(agent));
     return agent;
+  }
+
+  async createWorkflowAgent(workflowId: string, input: Omit<CreateAgentInput, "visibility" | "workspacePath">): Promise<Agent> {
+    return this.createAgent({ ...input, visibility: "internal", workspacePath: path.join(this.config.workspaceRoot, "workflows", workflowId) });
   }
 
   async updateAgent(id: string, input: UpdateAgentInput): Promise<Agent> {
@@ -153,6 +160,7 @@ export class AgentService {
   async sendMessage(
     agentId: string,
     prompt: string,
+    metadata?: { workflowId?: string; stageId?: string; displayContent?: string; workflowDisplay?: boolean },
   ): Promise<{ run: AgentRun; message: Message }> {
     if (!isArkConfigured(this.config)) {
       throw new HttpError(
@@ -173,14 +181,19 @@ export class AgentService {
       startedAt: null,
       completedAt: null,
       createdAt: timestamp,
+      ...(metadata?.workflowId ? { workflowId: metadata.workflowId } : {}),
+      ...(metadata?.stageId ? { stageId: metadata.stageId } : {}),
     };
     const message: Message = {
       id: randomUUID(),
       agentId,
       runId,
       role: "user",
-      content: prompt,
+      content: metadata?.displayContent ?? prompt,
       createdAt: timestamp,
+      ...(metadata?.workflowId ? { workflowId: metadata.workflowId } : {}),
+      ...(metadata?.stageId ? { stageId: metadata.stageId } : {}),
+      ...(metadata?.workflowDisplay !== undefined ? { workflowDisplay: metadata.workflowDisplay } : {}),
     };
     const agentAtStart = await this.store.mutate((database) => {
       const storedAgent = database.agents.find((item) => item.id === agentId);
@@ -214,19 +227,7 @@ export class AgentService {
   }
 
   async runToCompletion(agentId: string, prompt: string, metadata?: { workflowId?: string; stageId?: string }): Promise<AgentRun> {
-    const result = await this.sendMessage(agentId, prompt);
-    if (metadata) await this.store.mutate((database) => {
-      const run = database.runs.find((item) => item.id === result.run.id);
-      const message = database.messages.find((item) => item.id === result.message.id);
-      if (run) {
-        if (metadata.workflowId) run.workflowId = metadata.workflowId;
-        if (metadata.stageId) run.stageId = metadata.stageId;
-      }
-      if (message) {
-        if (metadata.workflowId) message.workflowId = metadata.workflowId;
-        if (metadata.stageId) message.stageId = metadata.stageId;
-      }
-    });
+    const result = await this.sendMessage(agentId, prompt, metadata);
     for (;;) {
       const run = this.getRun(result.run.id);
       if (run.status === "completed" || run.status === "failed" || run.status === "cancelled") return run;
@@ -269,7 +270,9 @@ export class AgentService {
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,
         prompt: run.prompt,
-        threadId: agentAtStart.codexThreadId,
+        // Workflow stages get a fresh Codex context; standalone agents retain
+        // their resumable conversations.
+        threadId: run.workflowId ? null : agentAtStart.codexThreadId,
       });
       const completedAt = now();
       await this.store.mutate((database) => {
@@ -287,6 +290,8 @@ export class AgentService {
           role: "assistant",
           content: result.output,
           createdAt: completedAt,
+          ...(storedRun.workflowId ? { workflowId: storedRun.workflowId } : {}),
+          ...(storedRun.stageId ? { stageId: storedRun.stageId } : {}),
         });
         agent.status = "ready";
         agent.codexThreadId = result.threadId;

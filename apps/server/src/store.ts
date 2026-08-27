@@ -19,7 +19,15 @@ const emptyDatabase = (): Database => ({
 type VersionedRecord = { version: number; [key: string]: unknown };
 
 function migrateDatabase(value: VersionedRecord, expectedVersion: number): VersionedRecord {
-  if (expectedVersion !== 2 || value.version !== 1) return value;
+  if (expectedVersion !== 2) return value;
+
+  if (value.version === 2 && Array.isArray(value.agents)) {
+    return {
+      ...value,
+      agents: (value.agents as Array<Record<string, unknown>>).map((agent) => ({ ...agent, visibility: agent.visibility === "internal" ? "internal" : "standalone" })),
+    };
+  }
+  if (value.version !== 1) return value;
 
   // Version 1 was the application database schema. New collections were added
   // over time, so missing collections are safe to initialize as empty arrays.
@@ -29,6 +37,7 @@ function migrateDatabase(value: VersionedRecord, expectedVersion: number): Versi
   return {
     ...value,
     version: 2,
+    agents: (value.agents as Array<Record<string, unknown>>).map((agent) => ({ ...agent, visibility: agent.visibility === "internal" ? "internal" : "standalone" })),
     users: Array.isArray(value.users) ? value.users : [],
     workflows: Array.isArray(value.workflows) ? value.workflows : [],
     artifacts: Array.isArray(value.artifacts) ? value.artifacts : [],
