@@ -3,10 +3,11 @@ import path from "node:path";
 import type { Database } from "./types.js";
 
 const emptyDatabase = (): Database => ({
-  version: 1,
+  version: 2,
   agents: [],
   messages: [],
   runs: [],
+  users: [],
 });
 
 export class JsonStore {
@@ -20,7 +21,7 @@ export class JsonStore {
     try {
       const raw = await readFile(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as Database;
-      if (parsed.version !== 1 || !Array.isArray(parsed.agents)) {
+      if (parsed.version !== 2 || !Array.isArray(parsed.agents) || !Array.isArray(parsed.users)) {
         throw new Error("Unsupported database format");
       }
       this.data = parsed;

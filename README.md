@@ -8,9 +8,8 @@ Run it locally with Docker, Colima, or rootless Podman, or deploy it to
 Volcengine ECS.
 
 > [!WARNING]
-> This is a single-user proof of concept. It intentionally has no identity,
-> tracing, audit, or hardened sandbox middleware. Do not use production data or
-> credentials. See [SECURITY.md](SECURITY.md).
+> This remains a proof of concept and should not receive production data or
+> credentials without the hardening guidance in [SECURITY.md](SECURITY.md).
 
 ## Screenshots
 
@@ -249,3 +248,8 @@ docker compose config
 ## License
 
 [MIT](LICENSE)
+# Identity authorization
+
+The launchpad now includes password-based local accounts with no email, phone, or personal-information fields. `apps/server/src/auth.ts` uses Node scrypt with a random per-user salt, constant-time verification, 12-hour httpOnly SameSite sessions, and contributor bootstrap keys. `apps/server/src/app.ts` exposes login, logout, current-user, and password-change endpoints; the hidden honeypot field provides basic bot detection and malformed login requests are rejected. `apps/server/src/store.ts` persists the version-2 user records with restrictive file permissions. `apps/web/src/App.tsx`, `api.ts`, and `styles.css` provide the login page, account/password controls, and flexible existing-agent landing page.
+
+Set `CONTRIBUTOR_ACCESS_KEYS` to comma-separated `username:password` entries for the two repository contributors. Store this only in a secret environment/configuration store; never commit it. Passwords must be at least 8 characters. Existing `APP_AUTH_TOKEN` remains supported for deployments that need a shared operator fallback, but account sessions are the normal browser flow. The JSON store is suitable for this single-instance application; use an encrypted transactional database and a shared session store before multi-instance production deployment.

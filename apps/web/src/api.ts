@@ -33,6 +33,10 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  login: (username: string, password: string, honeypot = "") => request<{ user: { id: string; username: string; isContributor: boolean } }>("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password, honeypot }) }),
+  me: () => request<{ user: { id: string; username: string; isContributor: boolean } }>("/api/auth/me"),
+  logout: () => request<{ ok: true }>("/api/auth/logout", { method: "POST" }),
+  changePassword: (currentPassword: string, newPassword: string) => request<{ ok: true }>("/api/auth/password", { method: "POST", body: JSON.stringify({ currentPassword, newPassword }) }),
   auth: () => request<{ required: boolean }>("/api/auth"),
   system: () => request<SystemInfo>("/api/system"),
   listAgents: () => request<{ agents: Agent[] }>("/api/agents"),

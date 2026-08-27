@@ -73,6 +73,10 @@ body {
   border-radius: 9px;
   padding: 0 12px;
 }
+.trap-field { position: absolute; left: -10000px; width: 1px !important; height: 1px; overflow: hidden; }
+.account-card { margin-top: auto; display: grid; gap: 8px; padding: 14px 8px; border-top: 1px solid #44443f; }
+.account-card strong { font-size: 13px; }
+.account-card input { min-height: 34px; width: 100%; border-radius: 7px; border: 1px solid #55554e; background: #30302c; color: white; padding: 0 8px; }
 
 button,
 input,

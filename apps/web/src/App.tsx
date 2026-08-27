@@ -48,6 +48,12 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
+  const [user, setUser] = useState<{ username: string } | null>(null);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [honeypot, setHoneypot] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
   const [authInput, setAuthInput] = useState("");
   const messageEnd = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
@@ -84,13 +90,12 @@ export default function App() {
   useEffect(() => {
     mountedRef.current = true;
     void api
-      .auth()
-      .then(async ({ required }) => {
+      .me()
+      .then(async ({ user: current }) => {
         if (!mountedRef.current) return;
-        setAuthRequired(required);
-        if (!required) await bootstrap();
+        setUser(current); setAuthRequired(false); await bootstrap();
       })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+      .catch(() => setAuthRequired(true));
     return () => {
       mountedRef.current = false;
     };
@@ -249,20 +254,26 @@ export default function App() {
     event.preventDefault();
     setBusy(true);
     setError(null);
-    setAuthToken(authInput);
     try {
-      await bootstrap();
+      const result = await api.login(username, password, honeypot);
+      setUser(result.user); await bootstrap();
       setAuthRequired(false);
-      setAuthInput("");
+      setUsername(""); setPassword("");
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 401) {
-        setError("The access token is not valid.");
+        setError("Invalid username or password.");
       } else {
         setError(reason instanceof Error ? reason.message : String(reason));
       }
     } finally {
       setBusy(false);
     }
+  };
+
+  const updatePassword = async (event: React.FormEvent) => {
+    event.preventDefault(); setError(null);
+    try { await api.changePassword(authInput, newPassword); setAuthInput(""); setNewPassword(""); setShowPassword(false); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
   };
 
   if (authRequired === null) {
@@ -284,21 +295,23 @@ export default function App() {
         <form className="auth-card" onSubmit={unlock}>
           <div className="brand-mark">A</div>
           <span className="eyebrow">Agent Launchpad</span>
-          <h1>Enter the access token</h1>
-          <p>This shared demo token is configured by the platform operator.</p>
+          <h1>Sign in to Launchpad</h1>
+          <p>Your account is identified only by a username and password.</p>
           {error && <div className="error-banner" role="alert">{error}</div>}
           <label>
-            Access token
+            Username
+            <input autoFocus value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required />
+          </label>
+          <label>
+            Password
             <input
-              autoFocus
               type="password"
-              value={authInput}
-              onChange={(event) => setAuthInput(event.target.value)}
-              autoComplete="current-password"
+              value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password"
               required
             />
           </label>
-          <button className="button button-primary" disabled={busy || !authInput.trim()}>
+          <label className="trap-field" aria-hidden="true">Leave blank<input tabIndex={-1} value={honeypot} onChange={(event) => setHoneypot(event.target.value)} /></label>
+          <button className="button button-primary" disabled={busy || !username.trim() || !password}>
             {busy ? <Spinner /> : "Open Launchpad"}
           </button>
         </form>
@@ -366,6 +379,7 @@ export default function App() {
             {system?.containerEngine ? " · " + system.containerEngine : ""}
           </span>
         </div>
+        {user && <div className="account-card"><span className="eyebrow">Account</span><strong>{user.username}</strong><button className="button button-ghost" onClick={() => setShowPassword(v => !v)}>Change password</button>{showPassword && <form onSubmit={updatePassword}><input type="password" placeholder="Current password" value={authInput} onChange={e => setAuthInput(e.target.value)} required /><input type="password" placeholder="New password (8+ chars)" value={newPassword} onChange={e => setNewPassword(e.target.value)} minLength={8} required /><button className="button button-primary">Save password</button></form>}<button className="button button-ghost" onClick={async () => { await api.logout(); setUser(null); setAuthRequired(true); }}>Sign out</button></div>}
       </aside>
 
       <main className="main">

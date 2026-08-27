@@ -1,4 +1,5 @@
 import cors from "@fastify/cors";
+import fastifyCookie from "@fastify/cookie";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 import { timingSafeEqual } from "node:crypto";
@@ -7,6 +8,7 @@ import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
+import { AuthService } from "./auth.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -22,10 +24,13 @@ const updateAgentBody = createAgentBody.partial().refine(
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
 });
+const loginBody = z.object({ username: z.string().trim().min(1).max(64), password: z.string().min(8).max(200), honeypot: z.string().max(0).optional() });
+const passwordBody = z.object({ currentPassword: z.string().min(8), newPassword: z.string().min(8).max(200) });
 
 export async function createApp(
   config: AppConfig,
   service: AgentService,
+  auth: AuthService,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -41,16 +46,19 @@ export async function createApp(
         ? ["http://localhost:5173", "http://127.0.0.1:5173"]
         : false,
   });
+  await app.register(fastifyCookie);
 
   app.addHook("onRequest", async (request, reply) => {
     if (
       !config.authToken ||
       !request.url.startsWith("/api/") ||
       request.url === "/api/health" ||
-      request.url === "/api/auth"
+      request.url === "/api/auth" || request.url === "/api/auth/login"
     ) {
       return;
     }
+    const session = request.cookies?.launchpad_session;
+    if (session) { try { (request as any).user = auth.get(session); return; } catch {} }
     const header = request.headers.authorization ?? "";
     const candidate = header.startsWith("Bearer ") ? header.slice(7) : "";
     const expectedBuffer = Buffer.from(config.authToken);
@@ -63,12 +71,23 @@ export async function createApp(
     }
   });
 
+  app.post("/api/auth/login", async (request, reply) => {
+    const body = loginBody.parse(request.body);
+    if (body.honeypot) throw new HttpError(401, "Invalid username or password");
+    const result = await auth.login(body.username, body.password);
+    reply.setCookie("launchpad_session", result.token, { httpOnly: true, sameSite: "strict", secure: config.nodeEnv === "production", path: "/", maxAge: 60 * 60 * 12 });
+    return { user: result.user };
+  });
+  app.post("/api/auth/logout", async (_request, reply) => { reply.clearCookie("launchpad_session", { path: "/" }); return { ok: true }; });
+  app.get("/api/auth/me", async request => ({ user: (request as any).user }));
+  app.post("/api/auth/password", async request => { await auth.changePassword((request as any).user.id, ...Object.values(passwordBody.parse(request.body)) as [string, string]); return { ok: true }; });
+
   app.get("/api/health", async () => ({
     ok: true,
     service: "volc-agent-launchpad",
   }));
 
-  app.get("/api/auth", async () => ({ required: config.authToken.length > 0 }));
+  app.get("/api/auth", async () => ({ required: true }));
 
   app.get("/api/system", async () => service.systemInfo());
 

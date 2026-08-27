@@ -44,10 +44,19 @@ export interface AgentRun {
 }
 
 export interface Database {
-  version: 1;
+  version: 2;
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
+  users: User[];
+}
+
+export interface User {
+  id: string;
+  username: string;
+  passwordHash: string;
+  createdAt: string;
+  isContributor: boolean;
 }
 
 export interface CreateAgentInput {
