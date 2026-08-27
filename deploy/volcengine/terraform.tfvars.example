@@ -1,5 +1,5 @@
-region           = "cn-beijing"
-zone_id          = "cn-beijing-a"
+region           = "ap-southeast"
+zone_id          = "ap-southeast-a"
 image_id         = "image-replace-with-ubuntu-image-id"
 instance_type    = "ecs.g4i.large"
 key_pair_name    = "replace-with-existing-key-pair"
