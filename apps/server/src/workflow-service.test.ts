@@ -20,8 +20,9 @@ describe("WorkflowService", () => {
     const store = new JsonStore(path.join(root, "data", "db.json")); const agents = new AgentService(config, store, new WorkspaceManager(config.workspaceRoot), new FakeRunner()); await agents.initialize();
     const workflows = new WorkflowService(store, agents); const workflow = await workflows.create({ taskDescription: "write a summary" }); await workflows.start(workflow.id);
     await expect.poll(() => workflows.get(workflow.id).stages[0]?.status).toBe("awaiting_approval");
-    expect(workflows.get(workflow.id).status).toBe("awaiting_approval"); expect(store.snapshot().verificationResults).toHaveLength(1);
+    expect(workflows.get(workflow.id).status).toBe("awaiting_approval"); expect(store.snapshot().verificationResults.length).toBeGreaterThan(0); expect(store.snapshot().verificationResults.every((result) => result.pass)).toBe(true);
     await workflows.approve(workflow.id, workflows.get(workflow.id).stages[0]!.id);
+    await expect(workflows.approve(workflow.id, workflows.get(workflow.id).stages[0]!.id)).resolves.toBeTruthy();
     await expect.poll(() => workflows.get(workflow.id).stages[1]?.status).toBe("awaiting_approval");
     expect(workflows.conversation(workflow.id).every((message) => message.agentName && message.stageId)).toBe(true);
   });
@@ -33,5 +34,14 @@ describe("WorkflowService", () => {
     const workflow = await workflows.create({ taskDescription: "draft" }); await workflows.start(workflow.id); await expect.poll(() => workflows.get(workflow.id).stages[0]?.status).toBe("awaiting_approval");
     await workflows.revise(workflow.id, workflows.get(workflow.id).stages[0]!.id, "make it shorter"); const updated = workflows.get(workflow.id);
     expect(updated.stages.filter((stage) => stage.kind === "repair")).toHaveLength(3); expect(store.snapshot().repairGroups[0]?.trigger).toBe("human_prompt");
+  });
+
+  it("recovers running workflows as paused", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "workflow-recovery-test-")); roots.push(root);
+    const config = loadConfig({ NODE_ENV: "test", APP_DATA_DIR: path.join(root, "data"), AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"), CODEX_HOME: path.join(root, "codex") });
+    const store = new JsonStore(path.join(root, "data", "db.json")); await store.initialize();
+    await store.mutate((db) => db.workflows.push({ id: "00000000-0000-4000-8000-000000000001", taskDescription: "x", stages: [], status: "running", createdBy: "test", verification: { profile: "balanced", maxAttempts: 2, maxRepairGroups: 1 }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
+    const agents = new AgentService(config, store, new WorkspaceManager(config.workspaceRoot), new FakeRunner()); await agents.initialize(); const workflows = new WorkflowService(store, agents); await workflows.initialize();
+    expect(workflows.get("00000000-0000-4000-8000-000000000001").status).toBe("paused"); expect(workflows.events("00000000-0000-4000-8000-000000000001").some((event) => event.event === "workflow_recovered")).toBe(true);
   });
 });

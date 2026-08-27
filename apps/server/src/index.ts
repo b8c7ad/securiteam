@@ -19,9 +19,10 @@ const runner = createRunner(config);
 const service = new AgentService(config, store, workspaces, runner);
 await preferences.initialize();
 const auth = new AuthService(store, config.contributorAccessKeys, preferences);
-const workflows = new WorkflowService(store, service);
+const workflows = new WorkflowService(store, service, config);
 await service.initialize();
 await auth.initialize();
+await workflows.initialize();
 
 const app = await createApp(config, service, auth, workflows);
 

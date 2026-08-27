@@ -144,11 +144,14 @@ export async function createApp(
   const editBody = z.object({ content: z.unknown() });
   if (workflows) {
     app.get("/api/workflows", async () => ({ workflows: workflows.list() }));
-    app.post("/api/workflows", async (request, reply) => reply.code(201).send({ workflow: await workflows.create(workflowBody.parse(request.body)) }));
+    app.post("/api/workflows", async (request, reply) => { const body = workflowBody.parse(request.body); const workflow = body.templateId ? await workflows.create(body) : await workflows.createFromTask(body); return reply.code(201).send({ workflow }); });
     app.get("/api/workflows/:id", async (request) => ({ workflow: workflows.get(workflowIdParams.parse(request.params).id) }));
     app.get("/api/workflows/:id/events", async (request) => ({ events: workflows.events(workflowIdParams.parse(request.params).id) }));
     app.get("/api/workflows/:id/conversation", async (request) => ({ messages: workflows.conversation(workflowIdParams.parse(request.params).id) }));
     app.post("/api/workflows/:id/start", async (request) => ({ workflow: await workflows.start(workflowIdParams.parse(request.params).id) }));
+    app.post("/api/workflows/:id/pause", async (request) => ({ workflow: await workflows.pause(workflowIdParams.parse(request.params).id) }));
+    app.post("/api/workflows/:id/cancel", async (request) => ({ workflow: await workflows.cancel(workflowIdParams.parse(request.params).id) }));
+    app.get("/api/workflows/:id/history", async (request) => ({ history: workflows.history(workflowIdParams.parse(request.params).id) }));
     app.post("/api/workflows/:id/stages/:stageId/approve", async (request) => { const p = stageParams.parse(request.params); return { workflow: await workflows.approve(p.id, p.stageId) }; });
     app.post("/api/workflows/:id/stages/:stageId/reject", async (request) => { const p = stageParams.parse(request.params); return { workflow: await workflows.reject(p.id, p.stageId, feedbackBody.parse(request.body).feedback) }; });
     app.post("/api/workflows/:id/stages/:stageId/revise", async (request) => { const p = stageParams.parse(request.params); return { workflow: await workflows.revise(p.id, p.stageId, revisionBody.parse(request.body).prompt) }; });
