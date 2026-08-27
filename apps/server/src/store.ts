@@ -16,6 +16,29 @@ const emptyDatabase = (): Database => ({
   workflowEvents: [],
 });
 
+type VersionedRecord = { version: number; [key: string]: unknown };
+
+function migrateDatabase(value: VersionedRecord, expectedVersion: number): VersionedRecord {
+  if (expectedVersion !== 2 || value.version !== 1) return value;
+
+  // Version 1 was the application database schema. New collections were added
+  // over time, so missing collections are safe to initialize as empty arrays.
+  if (!Array.isArray(value.agents) || !Array.isArray(value.messages) || !Array.isArray(value.runs)) {
+    return value;
+  }
+  return {
+    ...value,
+    version: 2,
+    users: Array.isArray(value.users) ? value.users : [],
+    workflows: Array.isArray(value.workflows) ? value.workflows : [],
+    artifacts: Array.isArray(value.artifacts) ? value.artifacts : [],
+    repairGroups: Array.isArray(value.repairGroups) ? value.repairGroups : [],
+    reviewDecisions: Array.isArray(value.reviewDecisions) ? value.reviewDecisions : [],
+    verificationResults: Array.isArray(value.verificationResults) ? value.verificationResults : [],
+    workflowEvents: Array.isArray(value.workflowEvents) ? value.workflowEvents : [],
+  };
+}
+
 export class JsonStore<T = Database> {
   private data: T;
   private queue: Promise<void> = Promise.resolve();
@@ -30,17 +53,13 @@ export class JsonStore<T = Database> {
       if (!parsed || typeof parsed !== "object" || !("version" in parsed)) {
         throw new Error("Unsupported database format");
       }
-      const database = parsed as unknown as Database;
-      if (database.version !== 2) throw new Error("Unsupported database version");
-      this.data = {
-        ...database,
-        workflows: database.workflows ?? [],
-        artifacts: database.artifacts ?? [],
-        repairGroups: database.repairGroups ?? [],
-        reviewDecisions: database.reviewDecisions ?? [],
-        verificationResults: database.verificationResults ?? [],
-        workflowEvents: database.workflowEvents ?? [],
-      } as T;
+      const expectedVersion = (this.data as unknown as VersionedRecord).version;
+      const migrated = migrateDatabase(parsed as unknown as VersionedRecord, expectedVersion);
+      if (migrated.version !== expectedVersion) {
+        throw new Error(`Unsupported database version: ${migrated.version}`);
+      }
+      this.data = migrated as T;
+      if (migrated !== parsed) await this.persist(this.data);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;

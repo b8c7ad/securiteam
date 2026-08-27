@@ -1,8 +1,9 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { JsonStore } from "./store.js";
+import type { Database, PreferencesDatabase } from "./types.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -15,6 +16,31 @@ afterEach(async () => {
 });
 
 describe("JsonStore", () => {
+  it("migrates the version 1 application database", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
+    temporaryDirectories.push(root);
+    const filePath = path.join(root, "db.json");
+    await writeFile(filePath, JSON.stringify({ version: 1, agents: [], messages: [], runs: [] }));
+
+    const store = new JsonStore<Database>(filePath);
+    await store.initialize();
+
+    expect(store.snapshot()).toMatchObject({ version: 2, users: [], workflows: [], workflowEvents: [] });
+    expect(JSON.parse(await readFile(filePath, "utf8")).version).toBe(2);
+  });
+
+  it("uses the supplied schema version for non-application stores", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
+    temporaryDirectories.push(root);
+    const filePath = path.join(root, "preferences.json");
+    const initial: PreferencesDatabase = { version: 1, preferences: [] };
+    const store = new JsonStore<PreferencesDatabase>(filePath, initial);
+
+    await store.initialize();
+
+    expect(store.snapshot()).toEqual(initial);
+  });
+
   it("does not publish a mutation in memory when persistence fails", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
     temporaryDirectories.push(root);
