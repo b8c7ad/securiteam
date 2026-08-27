@@ -138,7 +138,7 @@ export async function createApp(
 
   const workflowIdParams = z.object({ id: z.string().uuid() });
   const stageParams = z.object({ id: z.string().uuid(), stageId: z.string().uuid() });
-  const workflowBody = z.object({ taskDescription: z.string().trim().min(1).max(50_000), templateId: z.string().optional(), createdBy: z.string().optional() });
+  const workflowBody = z.object({ taskDescription: z.string().trim().min(1).max(50_000), templateId: z.string().optional(), createdBy: z.string().optional(), verificationProfile: z.enum(["thorough", "balanced", "token_saver"]).optional() });
   const feedbackBody = z.object({ feedback: z.string().trim().min(1).max(50_000) });
   const revisionBody = z.object({ prompt: z.string().trim().min(1).max(50_000) });
   const editBody = z.object({ content: z.unknown() });

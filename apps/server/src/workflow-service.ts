@@ -32,12 +32,12 @@ export class WorkflowService {
     }).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
-  async create(input: { taskDescription: string; templateId?: string | undefined; createdBy?: string | undefined }): Promise<Workflow> {
+  async create(input: { taskDescription: string; templateId?: string | undefined; createdBy?: string | undefined; verificationProfile?: Workflow["verification"]["profile"] | undefined }): Promise<Workflow> {
     const selected = template(input.templateId ?? "blog-post-pipeline");
     return this.createWithStages(input, selected, selected.stages);
   }
 
-  async createFromTask(input: { taskDescription: string; createdBy?: string | undefined }): Promise<Workflow> {
+  async createFromTask(input: { taskDescription: string; createdBy?: string | undefined; verificationProfile?: Workflow["verification"]["profile"] | undefined }): Promise<Workflow> {
     if (!this.config || !isArkConfigured(this.config)) return this.create(input);
     try {
       const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 20_000);
@@ -52,7 +52,7 @@ export class WorkflowService {
     } catch { return this.create(input); }
   }
 
-  private async createWithStages(input: { taskDescription: string; templateId?: string | undefined; createdBy?: string | undefined }, selected: WorkflowTemplate, definitions: TemplateStage[]): Promise<Workflow> {
+  private async createWithStages(input: { taskDescription: string; templateId?: string | undefined; createdBy?: string | undefined; verificationProfile?: Workflow["verification"]["profile"] | undefined }, selected: WorkflowTemplate, definitions: TemplateStage[]): Promise<Workflow> {
     const id = randomUUID(); const timestamp = now(); const stages: Stage[] = [];
     for (const [index, definition] of selected.stages.entries()) {
       validateSkills(definition.personaId, definition.skillIds ?? []);
@@ -60,7 +60,7 @@ export class WorkflowService {
       const agent = await this.agents.createAgent({ name: persona.displayName + " · " + (index + 1), description: persona.description, instructions: persona.basePrompt });
       stages.push({ id: randomUUID(), workflowId: id, order: index, name: definition.name, kind: "planned", personaId: definition.personaId, agentId: agent.id, skillIds: definition.skillIds ?? [], verifierIds: definition.verifierIds ?? [], status: "pending", attempt: 0, maxAttempts: 2, createdAt: timestamp, updatedAt: timestamp });
     }
-    const workflow: Workflow = { id, taskDescription: input.taskDescription.trim(), stages, status: "draft", createdBy: input.createdBy ?? "local-user", verification: { profile: "balanced", maxAttempts: 2, maxRepairGroups: 5 }, templateId: selected.id, createdAt: timestamp, updatedAt: timestamp };
+    const workflow: Workflow = { id, taskDescription: input.taskDescription.trim(), stages, status: "draft", createdBy: input.createdBy ?? "local-user", verification: { profile: input.verificationProfile ?? "balanced", maxAttempts: 2, maxRepairGroups: 5 }, templateId: selected.id, createdAt: timestamp, updatedAt: timestamp };
     await this.store.mutate((database) => database.workflows.push(workflow));
     return workflow;
   }

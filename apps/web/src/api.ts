@@ -1,4 +1,4 @@
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import type { Agent, AgentRun, Message, SystemInfo, VerificationProfile, Workflow, WorkflowEvent, WorkflowMessage } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -85,4 +85,16 @@ export const api = {
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
+  workflows: () => request<{ workflows: Workflow[] }>("/api/workflows"),
+  createWorkflow: (taskDescription: string, verificationProfile: VerificationProfile) => request<{ workflow: Workflow }>("/api/workflows", { method: "POST", body: JSON.stringify({ taskDescription, verificationProfile }) }),
+  workflow: (id: string) => request<{ workflow: Workflow }>("/api/workflows/" + id),
+  workflowConversation: (id: string) => request<{ messages: WorkflowMessage[] }>("/api/workflows/" + id + "/conversation"),
+  workflowEvents: (id: string) => request<{ events: WorkflowEvent[] }>("/api/workflows/" + id + "/events"),
+  startWorkflow: (id: string) => request<{ workflow: Workflow }>("/api/workflows/" + id + "/start", { method: "POST" }),
+  pauseWorkflow: (id: string) => request<{ workflow: Workflow }>("/api/workflows/" + id + "/pause", { method: "POST" }),
+  cancelWorkflow: (id: string) => request<{ workflow: Workflow }>("/api/workflows/" + id + "/cancel", { method: "POST" }),
+  approveStage: (workflowId: string, stageId: string) => request<{ workflow: Workflow }>(`/api/workflows/${workflowId}/stages/${stageId}/approve`, { method: "POST" }),
+  rejectStage: (workflowId: string, stageId: string, feedback: string) => request<{ workflow: Workflow }>(`/api/workflows/${workflowId}/stages/${stageId}/reject`, { method: "POST", body: JSON.stringify({ feedback }) }),
+  reviseStage: (workflowId: string, stageId: string, prompt: string) => request<{ workflow: Workflow }>(`/api/workflows/${workflowId}/stages/${stageId}/revise`, { method: "POST", body: JSON.stringify({ prompt }) }),
+  editStage: (workflowId: string, stageId: string, content: string) => request<{ workflow: Workflow }>(`/api/workflows/${workflowId}/stages/${stageId}/edit`, { method: "POST", body: JSON.stringify({ content }) }),
 };

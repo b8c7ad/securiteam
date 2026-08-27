@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import type { Agent, AgentRun, Message, SystemInfo, VerificationProfile, Workflow, WorkflowMessage } from "./types";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -50,10 +50,30 @@ function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
 
+const verificationOptions: Array<{ value: VerificationProfile; label: string; help: string }> = [
+  { value: "thorough", label: "Thorough", help: "More immediate checking · highest token use" },
+  { value: "balanced", label: "Balanced", help: "Good coverage · recommended" },
+  { value: "token_saver", label: "Minimal", help: "Lightweight checking · lowest token use" },
+];
+
+function identityColour(id: string): string {
+  const colours = ["violet", "teal", "amber", "rose", "blue", "green"];
+  let hash = 0;
+  for (const character of id) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  return colours[hash % colours.length]!;
+}
+
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [workflows, setWorkflows] = useState<Workflow[]>([]);
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null);
+  const [workflowMessages, setWorkflowMessages] = useState<WorkflowMessage[]>([]);
+  const [showWorkflowCreate, setShowWorkflowCreate] = useState(false);
+  const [workflowTask, setWorkflowTask] = useState("");
+  const [verificationProfile, setVerificationProfile] = useState<VerificationProfile>("balanced");
+  const [reviewInput, setReviewInput] = useState("");
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -94,6 +114,7 @@ export default function App() {
     () => agents.find((agent) => agent.id === selectedId) ?? null,
     [agents, selectedId],
   );
+  const selectedWorkflow = useMemo(() => workflows.find((workflow) => workflow.id === selectedWorkflowId) ?? null, [workflows, selectedWorkflowId]);
 
   const refreshAgents = useCallback(async () => {
     const { agents: next } = await api.listAgents();
@@ -113,8 +134,34 @@ export default function App() {
   }, []);
 
   const bootstrap = useCallback(async () => {
-    await Promise.all([refreshAgents(), api.system().then(setSystem)]);
+    await Promise.all([refreshAgents(), api.system().then(setSystem), api.workflows().then(({ workflows: next }) => setWorkflows(next))]);
   }, [refreshAgents]);
+
+  const refreshWorkflow = useCallback(async (workflowId: string) => {
+    const [workflowResult, conversationResult] = await Promise.all([api.workflow(workflowId), api.workflowConversation(workflowId)]);
+    if (mountedRef.current && selectedWorkflowId === workflowId) {
+      setWorkflows((current) => current.map((item) => item.id === workflowId ? workflowResult.workflow : item));
+      setWorkflowMessages(conversationResult.messages);
+    }
+    return workflowResult.workflow;
+  }, [selectedWorkflowId]);
+
+  useEffect(() => {
+    if (!selectedWorkflowId) { setWorkflowMessages([]); return; }
+    void refreshWorkflow(selectedWorkflowId).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+  }, [refreshWorkflow, selectedWorkflowId]);
+
+  useEffect(() => {
+    if (!selectedWorkflow || !["running", "awaiting_approval"].includes(selectedWorkflow.status)) return;
+    let stopped = false;
+    const poll = async () => {
+      if (stopped || !selectedWorkflowId) return;
+      try { const workflow = await refreshWorkflow(selectedWorkflowId); if (!stopped && ["running", "awaiting_approval"].includes(workflow.status)) window.setTimeout(() => void poll(), 1000); }
+      catch (reason) { if (!stopped) setError(reason instanceof Error ? reason.message : String(reason)); }
+    };
+    const timer = window.setTimeout(() => void poll(), 1000);
+    return () => { stopped = true; window.clearTimeout(timer); };
+  }, [refreshWorkflow, selectedWorkflow, selectedWorkflowId]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -328,6 +375,40 @@ export default function App() {
     setTheme(nextTheme); setAppFont(nextFont); void api.savePreferences(nextTheme, nextFont);
   };
 
+  const createWorkflow = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!workflowTask.trim()) return;
+    setBusy(true); setError(null);
+    try {
+      const { workflow } = await api.createWorkflow(workflowTask.trim(), verificationProfile);
+      setWorkflows((current) => [workflow, ...current]);
+      setSelectedWorkflowId(workflow.id); setSelectedId(null); setWorkflowTask(""); setShowWorkflowCreate(false);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setBusy(false); }
+  };
+
+  const workflowAction = async (action: "start" | "pause" | "cancel") => {
+    if (!selectedWorkflow) return;
+    setBusy(true); setError(null);
+    try {
+      const result = action === "start" ? await api.startWorkflow(selectedWorkflow.id) : action === "pause" ? await api.pauseWorkflow(selectedWorkflow.id) : await api.cancelWorkflow(selectedWorkflow.id);
+      setWorkflows((current) => current.map((item) => item.id === result.workflow.id ? result.workflow : item));
+      await refreshWorkflow(result.workflow.id);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setBusy(false); }
+  };
+
+  const reviewStage = async (stageId: string, action: "approve" | "reject" | "revise" | "edit", value = "") => {
+    if (!selectedWorkflow) return;
+    setBusy(true); setError(null);
+    try {
+      const result = action === "approve" ? await api.approveStage(selectedWorkflow.id, stageId) : action === "reject" ? await api.rejectStage(selectedWorkflow.id, stageId, value) : action === "revise" ? await api.reviseStage(selectedWorkflow.id, stageId, value) : await api.editStage(selectedWorkflow.id, stageId, value);
+      setWorkflows((current) => current.map((item) => item.id === result.workflow.id ? result.workflow : item));
+      await refreshWorkflow(result.workflow.id);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setBusy(false); }
+  };
+
   if (authRequired === null) {
     return (
       <main className="auth-screen">
@@ -417,6 +498,17 @@ export default function App() {
           )}
         </nav>
 
+        <div className="sidebar-label workflow-label"><span>Workflows</span><span>{workflows.length}</span></div>
+        <nav className="agent-list workflow-list" aria-label="Workflows">
+          {workflows.map((workflow) => (
+            <button className={"agent-card " + (workflow.id === selectedWorkflowId ? "selected" : "")} key={workflow.id} onClick={() => { setSelectedWorkflowId(workflow.id); setSelectedId(null); }}>
+              <div className="agent-avatar workflow-avatar">◇</div>
+              <div className="agent-card-copy"><strong>{workflow.taskDescription}</strong><span>{workflow.status.replace("_", " ")}</span></div>
+            </button>
+          ))}
+        </nav>
+        <button className="button button-ghost workflow-create" onClick={() => setShowWorkflowCreate(true)}>＋ New workflow</button>
+
         <div className="runtime-card">
           <span className="eyebrow">Runtime</span>
           <strong>{system?.runtime ?? "Checking…"}</strong>
@@ -452,7 +544,25 @@ export default function App() {
           </div>
         )}
 
-        {selected ? (
+        {selectedWorkflow ? (
+          <>
+            <header className="agent-header workflow-header">
+              <div><span className="eyebrow">Workflow chat</span><h1>{selectedWorkflow.taskDescription}</h1><p>{selectedWorkflow.stages.length} Agents · {selectedWorkflow.verification.profile === "thorough" ? "Thorough" : selectedWorkflow.verification.profile === "token_saver" ? "Minimal" : "Balanced"} verification</p></div>
+              <div className="header-actions">
+                {selectedWorkflow.status === "paused" || selectedWorkflow.status === "draft" ? <button className="button button-primary" onClick={() => void workflowAction("start")} disabled={busy}>Start / Resume</button> : null}
+                {selectedWorkflow.status === "running" ? <button className="button button-ghost" onClick={() => void workflowAction("pause")} disabled={busy}>Pause</button> : null}
+                {!['completed', 'cancelled', 'failed'].includes(selectedWorkflow.status) ? <button className="button button-danger" onClick={() => void workflowAction("cancel")} disabled={busy}>Cancel</button> : null}
+              </div>
+            </header>
+            <section className="playground workflow-playground">
+              <div className="playground-topbar"><div><span className="eyebrow">Conversation</span><h2>Agents working together</h2></div><div className="session-info"><span className="pulse" />{selectedWorkflow.status.replace("_", " ")}</div></div>
+              <div className="messages workflow-messages">
+                {workflowMessages.length === 0 ? <div className="welcome"><div className="welcome-orbit"><div>⌁</div></div><h3>The conversation will appear here</h3><p>Each Agent will take a turn and their replies will be labelled clearly.</p></div> : workflowMessages.map((message) => <article className={"message message-assistant workflow-message identity-" + identityColour(message.agentId)} key={message.id}><div className="workflow-avatar-small">{message.agentName.slice(0, 1).toUpperCase()}</div><div className="workflow-message-content"><div className="message-meta"><strong>{message.agentName}</strong><span>{message.personaId ?? "Agent"} · {message.stageName} · {formatTime(message.createdAt)}</span></div><div className="message-body">{message.content}</div>{message.stageKind === "repair" ? <span className="repair-label">Repair response</span> : null}</div></article>)}
+                {selectedWorkflow.stages.filter((stage) => stage.status === "awaiting_approval").map((stage) => <div className="review-panel" key={stage.id}><div><span className="eyebrow">Human review</span><strong>{stage.name} needs your decision</strong><p>Approve it, edit the response, reject it, or describe what should change.</p></div><textarea value={reviewInput} onChange={(event) => setReviewInput(event.target.value)} placeholder="Optional feedback or requested changes…" rows={2} /><div className="review-actions"><button className="button button-primary" disabled={busy} onClick={() => void reviewStage(stage.id, "approve")}>Approve</button><button className="button button-ghost" disabled={busy || !reviewInput.trim()} onClick={() => void reviewStage(stage.id, "edit", reviewInput)}>Edit response</button><button className="button button-ghost" disabled={busy || !reviewInput.trim()} onClick={() => void reviewStage(stage.id, "revise", reviewInput)}>Request changes</button><button className="button button-danger" disabled={busy || !reviewInput.trim()} onClick={() => void reviewStage(stage.id, "reject", reviewInput)}>Reject</button></div></div>)}
+              </div>
+            </section>
+          </>
+        ) : selected ? (
           <>
             <header className="agent-header">
               <div>
@@ -661,6 +771,8 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {showWorkflowCreate && <div className="modal-backdrop" onMouseDown={() => setShowWorkflowCreate(false)}><form className="modal" onSubmit={createWorkflow} onMouseDown={(event) => event.stopPropagation()}><div className="modal-heading"><div><span className="eyebrow">New workflow</span><h2>Start a group chat</h2><p>Agents will take turns helping with this task.</p></div><button type="button" onClick={() => setShowWorkflowCreate(false)}>×</button></div><label>What should the Agents do?<textarea autoFocus value={workflowTask} onChange={(event) => setWorkflowTask(event.target.value)} rows={5} maxLength={50000} required placeholder="Describe the task…" /></label><div className="preference-group"><span className="preference-label">Verification and token usage</span><div className="verification-options" role="group" aria-label="Verification and token usage">{verificationOptions.map((option) => <button key={option.value} type="button" className={`quick-option ${verificationProfile === option.value ? "selected" : ""}`} aria-pressed={verificationProfile === option.value} onClick={() => setVerificationProfile(option.value)}><span><strong>{option.label}</strong><small>{option.help}</small></span></button>)}</div></div><div className="modal-footer"><button type="button" className="button button-ghost" onClick={() => setShowWorkflowCreate(false)}>Cancel</button><button className="button button-primary" disabled={busy || !workflowTask.trim()}>{busy ? <Spinner /> : "Create workflow"}</button></div></form></div>}
 
       {showAccountSettings && user && (
         <div className="modal-backdrop" onMouseDown={() => setShowAccountSettings(false)}>
