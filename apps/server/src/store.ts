@@ -10,18 +10,18 @@ const emptyDatabase = (): Database => ({
   users: [],
 });
 
-export class JsonStore {
-  private data: Database = emptyDatabase();
+export class JsonStore<T = Database> {
+  private data: T;
   private queue: Promise<void> = Promise.resolve();
 
-  constructor(private readonly filePath: string) {}
+  constructor(private readonly filePath: string, initialData?: T) { this.data = initialData ?? emptyDatabase() as T; }
 
   async initialize(): Promise<void> {
     await mkdir(path.dirname(this.filePath), { recursive: true });
     try {
       const raw = await readFile(this.filePath, "utf8");
-      const parsed = JSON.parse(raw) as Database;
-      if (parsed.version !== 2 || !Array.isArray(parsed.agents) || !Array.isArray(parsed.users)) {
+      const parsed = JSON.parse(raw) as T;
+      if (!parsed || typeof parsed !== "object" || !("version" in parsed)) {
         throw new Error("Unsupported database format");
       }
       this.data = parsed;
@@ -29,16 +29,16 @@ export class JsonStore {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
       }
-      await this.persist();
+      await this.persist(this.data);
     }
   }
 
-  snapshot(): Database {
+  snapshot(): T {
     return structuredClone(this.data);
   }
 
-  async mutate<T>(mutation: (database: Database) => T | Promise<T>): Promise<T> {
-    let result!: T;
+  async mutate<R>(mutation: (database: T) => R | Promise<R>): Promise<R> {
+    let result!: R;
     const operation = this.queue.then(async () => {
       const next = structuredClone(this.data);
       result = await mutation(next);
@@ -50,7 +50,7 @@ export class JsonStore {
     return result;
   }
 
-  private async persist(data: Database = this.data): Promise<void> {
+  private async persist(data: T = this.data): Promise<void> {
     const temporaryPath = this.filePath + ".tmp";
     await writeFile(temporaryPath, JSON.stringify(data, null, 2) + "\n", {
       encoding: "utf8",

@@ -25,7 +25,9 @@ const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
 });
 const loginBody = z.object({ username: z.string().trim().min(1).max(64), password: z.string().min(8).max(200), honeypot: z.string().max(0).optional() });
+const registerBody = loginBody.omit({ honeypot: true });
 const passwordBody = z.object({ currentPassword: z.string().min(8), newPassword: z.string().min(8).max(200) });
+const preferencesBody = z.object({ theme: z.enum(["system", "light", "dark", "sepia", "forest", "ocean"]), font: z.enum(["system", "serif", "dyslexia", "modern"]) });
 
 export async function createApp(
   config: AppConfig,
@@ -50,15 +52,18 @@ export async function createApp(
 
   app.addHook("onRequest", async (request, reply) => {
     if (
-      !config.authToken ||
       !request.url.startsWith("/api/") ||
       request.url === "/api/health" ||
-      request.url === "/api/auth" || request.url === "/api/auth/login"
+      request.url === "/api/auth" || request.url === "/api/auth/login" || request.url === "/api/auth/register"
     ) {
       return;
     }
     const session = request.cookies?.launchpad_session;
     if (session) { try { (request as any).user = auth.get(session); return; } catch {} }
+    // Account sessions are independent of the optional shared operator token.
+    // With no APP_AUTH_TOKEN, the application remains open on loopback, but a
+    // valid account session must still be attached for account-only endpoints.
+    if (!config.authToken) return;
     const header = request.headers.authorization ?? "";
     const candidate = header.startsWith("Bearer ") ? header.slice(7) : "";
     const expectedBuffer = Buffer.from(config.authToken);
@@ -78,16 +83,54 @@ export async function createApp(
     reply.setCookie("launchpad_session", result.token, { httpOnly: true, sameSite: "strict", secure: config.nodeEnv === "production", path: "/", maxAge: 60 * 60 * 12 });
     return { user: result.user };
   });
+  app.post("/api/auth/register", async (request, reply) => {
+    const body = registerBody.parse(request.body);
+    const result = await auth.register(body.username, body.password);
+    reply.setCookie("launchpad_session", result.token, { httpOnly: true, sameSite: "strict", secure: config.nodeEnv === "production", path: "/", maxAge: 60 * 60 * 12 });
+    return reply.code(201).send({ user: result.user });
+  });
   app.post("/api/auth/logout", async (_request, reply) => { reply.clearCookie("launchpad_session", { path: "/" }); return { ok: true }; });
   app.get("/api/auth/me", async request => ({ user: (request as any).user }));
-  app.post("/api/auth/password", async request => { await auth.changePassword((request as any).user.id, ...Object.values(passwordBody.parse(request.body)) as [string, string]); return { ok: true }; });
+  app.post("/api/auth/password", async request => {
+    // The shared APP_AUTH_TOKEN fallback authenticates operators but does not
+    // identify a local account. Password changes must use an account session.
+    const user = (request as any).user;
+    if (!user) throw new HttpError(401, "Account session required");
+    const { currentPassword, newPassword } = passwordBody.parse(request.body);
+    await auth.changePassword(user.id, currentPassword, newPassword);
+    return { ok: true };
+  });
+  app.get("/api/auth/preferences", async request => {
+    const user = (request as any).user;
+    if (!user) throw new HttpError(401, "Account session required");
+    return { preferences: await auth.getPreferences(user.username) };
+  });
+  app.patch("/api/auth/preferences", async request => {
+    const user = (request as any).user;
+    if (!user) throw new HttpError(401, "Account session required");
+    const body = preferencesBody.parse(request.body);
+    return { preferences: await auth.savePreferences(user.username, body.theme, body.font) };
+  });
 
   app.get("/api/health", async () => ({
     ok: true,
     service: "volc-agent-launchpad",
   }));
 
-  app.get("/api/auth", async () => ({ required: true }));
+  app.get("/api/auth", async request => {
+    // Keep the browser session across a reload by probing the cookie rather
+    // than unconditionally sending an already signed-in user to the login UI.
+    const session = request.cookies?.launchpad_session;
+    if (session) {
+      try {
+        auth.get(session);
+        return { required: false };
+      } catch {
+        // Expired or invalid cookies should be treated as signed out.
+      }
+    }
+    return { required: true };
+  });
 
   app.get("/api/system", async () => service.systemInfo());
 

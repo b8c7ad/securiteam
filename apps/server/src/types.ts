@@ -51,6 +51,11 @@ export interface Database {
   users: User[];
 }
 
+export type Theme = "system" | "light" | "dark" | "sepia" | "forest" | "ocean";
+export type AppFont = "system" | "serif" | "dyslexia" | "modern";
+export interface UserPreference { username: string; theme: Theme; font: AppFont; updatedAt: string; }
+export interface PreferencesDatabase { version: 1; preferences: UserPreference[]; }
+
 export interface User {
   id: string;
   username: string;

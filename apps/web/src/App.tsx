@@ -15,6 +15,21 @@ const emptyForm = {
     "Help me build and test software in this workspace. Keep changes small and explain the result.",
 };
 
+type Theme = "system" | "light" | "dark" | "sepia" | "forest" | "ocean";
+type AppFont = "system" | "serif" | "dyslexia" | "modern";
+
+const themeOptions: Array<{ value: Theme; label: string }> = [
+  { value: "system", label: "System" }, { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" }, { value: "sepia", label: "Sepia" },
+  { value: "forest", label: "Forest" }, { value: "ocean", label: "Ocean" },
+];
+const fontOptions: Array<{ value: AppFont; label: string; sample: string }> = [
+  { value: "system", label: "System UI", sample: "Aa" },
+  { value: "serif", label: "Georgia", sample: "Aa" },
+  { value: "dyslexia", label: "Verdana", sample: "Aa" },
+  { value: "modern", label: "Inter", sample: "Aa" },
+];
+
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat(undefined, {
     hour: "2-digit",
@@ -48,18 +63,32 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
+  const [showRegister, setShowRegister] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
+  const [showAccountSettings, setShowAccountSettings] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<"security" | "preferences">("security");
+  const [theme, setTheme] = useState<Theme>("system");
+  const [appFont, setAppFont] = useState<AppFont>("system");
   const [user, setUser] = useState<{ username: string } | null>(null);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [honeypot, setHoneypot] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [authInput, setAuthInput] = useState("");
+  const [registerPassword, setRegisterPassword] = useState("");
   const messageEnd = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
   selectedIdRef.current = selectedId;
+
+  useEffect(() => {
+    // Authentication always uses the browser's system appearance and font;
+    // restore the saved workspace preferences once the user is signed in.
+    const authenticated = authRequired === false;
+    document.documentElement.dataset.theme = authenticated ? theme : "system";
+    document.documentElement.dataset.font = authenticated ? appFont : "system";
+  }, [appFont, authRequired, theme]);
 
   const selected = useMemo(
     () => agents.find((agent) => agent.id === selectedId) ?? null,
@@ -90,9 +119,17 @@ export default function App() {
   useEffect(() => {
     mountedRef.current = true;
     void api
-      .me()
-      .then(async ({ user: current }) => {
+      .auth()
+      .then(async ({ required }) => {
         if (!mountedRef.current) return;
+        if (required) {
+          setAuthRequired(true);
+          return;
+        }
+        const { user: current } = await api.me();
+        if (!mountedRef.current) return;
+        const preferences = await api.preferences();
+        setTheme(preferences.preferences.theme as Theme); setAppFont(preferences.preferences.font as AppFont);
         setUser(current); setAuthRequired(false); await bootstrap();
       })
       .catch(() => setAuthRequired(true));
@@ -256,6 +293,8 @@ export default function App() {
     setError(null);
     try {
       const result = await api.login(username, password, honeypot);
+      const preferences = await api.preferences();
+      setTheme(preferences.preferences.theme as Theme); setAppFont(preferences.preferences.font as AppFont);
       setUser(result.user); await bootstrap();
       setAuthRequired(false);
       setUsername(""); setPassword("");
@@ -270,10 +309,23 @@ export default function App() {
     }
   };
 
+  const register = async (event: React.FormEvent) => {
+    event.preventDefault(); setBusy(true); setError(null);
+    try {
+      const result = await api.register(username, registerPassword);
+      setUser(result.user); setAuthRequired(false); setUsername(""); setRegisterPassword(""); await bootstrap();
+    } catch (reason) { setError(reason instanceof ApiError && reason.status === 409 ? "That username is already in use." : reason instanceof Error ? reason.message : String(reason)); }
+    finally { setBusy(false); }
+  };
+
   const updatePassword = async (event: React.FormEvent) => {
     event.preventDefault(); setError(null);
-    try { await api.changePassword(authInput, newPassword); setAuthInput(""); setNewPassword(""); setShowPassword(false); }
+    try { await api.changePassword(authInput, newPassword); setAuthInput(""); setNewPassword(""); setShowAccountSettings(false); }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+  };
+
+  const updatePreferences = (nextTheme: Theme, nextFont: AppFont) => {
+    setTheme(nextTheme); setAppFont(nextFont); void api.savePreferences(nextTheme, nextFont);
   };
 
   if (authRequired === null) {
@@ -292,28 +344,22 @@ export default function App() {
   if (authRequired) {
     return (
       <main className="auth-screen">
-        <form className="auth-card" onSubmit={unlock}>
+        <form className="auth-card" onSubmit={showRegister ? register : unlock}>
           <div className="brand-mark">A</div>
           <span className="eyebrow">Agent Launchpad</span>
-          <h1>Sign in to Launchpad</h1>
-          <p>Your account is identified only by a username and password.</p>
+          <h1>{showRegister ? "Create your account" : "Sign in to Launchpad"}</h1>
+          <p>{showRegister ? "Create an account to save your agents and workspace sessions." : "Your account is identified only by a username and password."}</p>
           {error && <div className="error-banner" role="alert">{error}</div>}
           <label>
             Username
             <input autoFocus value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required />
           </label>
-          <label>
-            Password
-            <input
-              type="password"
-              value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password"
-              required
-            />
-          </label>
-          <label className="trap-field" aria-hidden="true">Leave blank<input tabIndex={-1} value={honeypot} onChange={(event) => setHoneypot(event.target.value)} /></label>
-          <button className="button button-primary" disabled={busy || !username.trim() || !password}>
-            {busy ? <Spinner /> : "Open Launchpad"}
+          <label>Password<input type="password" value={showRegister ? registerPassword : password} onChange={(event) => showRegister ? setRegisterPassword(event.target.value) : setPassword(event.target.value)} autoComplete={showRegister ? "new-password" : "current-password"} minLength={8} required /></label>
+          {!showRegister && <label className="trap-field" aria-hidden="true">Leave blank<input tabIndex={-1} value={honeypot} onChange={(event) => setHoneypot(event.target.value)} /></label>}
+          <button className="button button-primary" disabled={busy || !username.trim() || !(showRegister ? registerPassword : password)}>
+            {busy ? <Spinner /> : showRegister ? "Create account" : "Open Launchpad"}
           </button>
+          <button type="button" className="auth-link" onClick={() => { setShowRegister(v => !v); setError(null); }}>{showRegister ? "Already have an account? Sign in" : "Create account"}</button>
         </form>
       </main>
     );
@@ -379,7 +425,7 @@ export default function App() {
             {system?.containerEngine ? " · " + system.containerEngine : ""}
           </span>
         </div>
-        {user && <div className="account-card"><span className="eyebrow">Account</span><strong>{user.username}</strong><button className="button button-ghost" onClick={() => setShowPassword(v => !v)}>Change password</button>{showPassword && <form onSubmit={updatePassword}><input type="password" placeholder="Current password" value={authInput} onChange={e => setAuthInput(e.target.value)} required /><input type="password" placeholder="New password (8+ chars)" value={newPassword} onChange={e => setNewPassword(e.target.value)} minLength={8} required /><button className="button button-primary">Save password</button></form>}<button className="button button-ghost" onClick={async () => { await api.logout(); setUser(null); setAuthRequired(true); }}>Sign out</button></div>}
+        {user && <div className="profile-area"><button className="profile-button" aria-label="Open profile settings" onClick={() => setShowProfile(v => !v)}><span className="profile-icon">{user.username.slice(0, 1).toUpperCase()}</span><span>{user.username}</span><span>⌃</span></button>{showProfile && <div className="profile-menu"><strong>{user.username}</strong><button onClick={() => { setShowProfile(false); setShowAccountSettings(true); }}>Settings</button><button onClick={async () => { await api.logout(); setUser(null); setAuthRequired(true); }}>Sign out</button></div>}</div>}
       </aside>
 
       <main className="main">
@@ -615,6 +661,53 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {showAccountSettings && user && (
+        <div className="modal-backdrop" onMouseDown={() => setShowAccountSettings(false)}>
+          <section className="account-settings-modal" onMouseDown={(event) => event.stopPropagation()} aria-labelledby="account-settings-title">
+            <div className="modal-heading">
+              <div>
+                <span className="eyebrow">Account</span>
+                <h2 id="account-settings-title">Settings</h2>
+                <p>Manage your Launchpad account and preferences.</p>
+              </div>
+              <button type="button" aria-label="Close settings" onClick={() => setShowAccountSettings(false)}>×</button>
+            </div>
+            <div className="account-settings-body">
+              <nav className="settings-nav" aria-label="Settings sections">
+                <button className={`settings-nav-item ${settingsTab === "security" ? "active" : ""}`} type="button" onClick={() => setSettingsTab("security")}>Security</button>
+                <button className={`settings-nav-item ${settingsTab === "preferences" ? "active" : ""}`} type="button" onClick={() => setSettingsTab("preferences")}>Preferences</button>
+              </nav>
+              {settingsTab === "security" ? <div className="settings-section">
+                <span className="eyebrow">Security</span>
+                <h3>Change password</h3>
+                <p className="settings-help">Use a strong password with at least 8 characters.</p>
+                <form onSubmit={updatePassword}>
+                  <label>Current password<input autoFocus type="password" value={authInput} onChange={(event) => setAuthInput(event.target.value)} autoComplete="current-password" required /></label>
+                  <label>New password<input type="password" placeholder="8+ characters" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} autoComplete="new-password" minLength={8} required /></label>
+                  <div className="modal-footer"><button type="button" className="button button-ghost" onClick={() => setShowAccountSettings(false)}>Cancel</button><button className="button button-primary" disabled={busy}>Save password</button></div>
+                </form>
+              </div> : <div className="settings-section">
+                <span className="eyebrow">Preferences</span>
+                <h3>Personalize your workspace</h3>
+                <p className="settings-help">Choose a comfortable theme and reading font. Changes apply instantly.</p>
+                <div className="preference-group">
+                  <span className="preference-label">Theme</span>
+                  <div className="quick-options theme-options" role="group" aria-label="Theme">
+                    {themeOptions.map((option) => <button key={option.value} type="button" className={`quick-option ${theme === option.value ? "selected" : ""}`} aria-pressed={theme === option.value} onClick={() => updatePreferences(option.value, appFont)}><span className={`theme-swatch theme-${option.value}`} />{option.label}</button>)}
+                  </div>
+                </div>
+                <div className="preference-group">
+                  <span className="preference-label">Font</span>
+                  <div className="quick-options font-options" role="group" aria-label="Font">
+                    {fontOptions.map((option) => <button key={option.value} type="button" className={`quick-option font-${option.value} ${appFont === option.value ? "selected" : ""}`} aria-pressed={appFont === option.value} onClick={() => updatePreferences(theme, option.value)}><span className="font-sample">{option.sample}</span>{option.label}</button>)}
+                  </div>
+                </div>
+              </div>}
+            </div>
+          </section>
+        </div>
+      )}
 
       {showCreate && (
         <div className="modal-backdrop" onMouseDown={() => setShowCreate(false)}>

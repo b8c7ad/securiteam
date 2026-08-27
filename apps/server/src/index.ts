@@ -4,6 +4,7 @@ import { createApp } from "./app.js";
 import { loadConfig, writeCodexConfig } from "./config.js";
 import { createRunner } from "./runner-factory.js";
 import { JsonStore } from "./store.js";
+import type { PreferencesDatabase } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 import { AuthService } from "./auth.js";
 
@@ -11,10 +12,12 @@ const config = loadConfig();
 await writeCodexConfig(config);
 
 const store = new JsonStore(path.join(config.dataDirectory, "launchpad.json"));
+const preferences = new JsonStore<PreferencesDatabase>(path.join(config.dataDirectory, "user-preferences.json"), { version: 1, preferences: [] });
 const workspaces = new WorkspaceManager(config.workspaceRoot);
 const runner = createRunner(config);
 const service = new AgentService(config, store, workspaces, runner);
-const auth = new AuthService(store, config.contributorAccessKeys);
+await preferences.initialize();
+const auth = new AuthService(store, config.contributorAccessKeys, preferences);
 await service.initialize();
 await auth.initialize();
 
