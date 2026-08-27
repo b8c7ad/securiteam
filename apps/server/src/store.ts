@@ -24,7 +24,16 @@ export class JsonStore<T = Database> {
       if (!parsed || typeof parsed !== "object" || !("version" in parsed)) {
         throw new Error("Unsupported database format");
       }
-      this.data = parsed;
+      // Older database files may not contain collections added in later
+      // versions (for example, `users` was added after the initial schema).
+      // Merge the persisted data over the schema defaults so callers never
+      // receive an object with an undefined collection.
+      if (this.data && typeof this.data === "object" && parsed && typeof parsed === "object") {
+        this.data = { ...(this.data as object), ...(parsed as object) } as T;
+      } else {
+        this.data = parsed;
+      }
+      await this.persist(this.data);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
