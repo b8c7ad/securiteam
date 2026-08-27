@@ -1,6 +1,10 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
+export type WorkflowStatus = "draft" | "running" | "paused" | "awaiting_approval" | "completed" | "failed" | "cancelled";
+export type StageStatus = "pending" | "running" | "awaiting_approval" | "approved" | "rejected" | "completed" | "skipped" | "failed";
+export type StageKind = "planned" | "repair";
+export type VerificationProfile = "thorough" | "balanced" | "token_saver";
 
 export interface Agent {
   id: string;
@@ -22,6 +26,8 @@ export interface Message {
   role: MessageRole;
   content: string;
   createdAt: string;
+  workflowId?: string;
+  stageId?: string;
 }
 
 export interface RunUsage {
@@ -41,6 +47,8 @@ export interface AgentRun {
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
+  workflowId?: string;
+  stageId?: string;
 }
 
 export interface Database {
@@ -49,7 +57,23 @@ export interface Database {
   messages: Message[];
   runs: AgentRun[];
   users: User[];
+  workflows: Workflow[];
+  artifacts: Artifact[];
+  repairGroups: RepairGroup[];
+  reviewDecisions: ReviewDecision[];
+  verificationResults: VerificationResultRecord[];
+  workflowEvents: WorkflowEvent[];
 }
+
+export interface VerificationSettings { profile: VerificationProfile; maxAttempts: number; maxRepairGroups: number; }
+export interface Workflow { id: string; taskDescription: string; stages: Stage[]; status: WorkflowStatus; createdBy: string; verification: VerificationSettings; templateId?: string; createdAt: string; updatedAt: string; }
+export interface Stage { id: string; workflowId: string; order: number; name: string; kind: StageKind; repairGroupId?: string; insertedAfterStageId?: string; personaId: string; agentId: string; skillIds: string[]; verifierIds: string[]; userFlair?: string; status: StageStatus; inputArtifactId?: string; outputArtifactId?: string; attempt: number; maxAttempts: number; lastError?: string; createdAt: string; updatedAt: string; }
+export interface Artifact { id: string; workflowId: string; stageId: string; version: number; parentArtifactId?: string; format: "text" | "markdown" | "json" | "code"; content: unknown; schemaVersion: number; confidence?: number; flaggedForReview?: boolean; rationale?: string; metadata: Record<string, unknown>; createdBy: "agent" | "verifier" | "human"; createdAt: string; }
+export type HumanReviewAction = "approve" | "edit" | "reject" | "revise" | "skip";
+export interface ReviewDecision { id: string; workflowId: string; stageId: string; artifactId: string; action: HumanReviewAction; feedback?: string | undefined; prompt?: string | undefined; editedArtifactId?: string | undefined; createdBy: string; createdAt: string; }
+export interface RepairGroup { id: string; workflowId: string; sourceStageId: string; sourceArtifactId: string; trigger: "human_edit" | "human_rejection" | "human_prompt"; feedback?: string | undefined; prompt?: string | undefined; stageIds: string[]; status: "pending" | "running" | "completed" | "failed"; createdAt: string; completedAt?: string | undefined; }
+export interface VerificationResultRecord { id: string; workflowId: string; stageId: string; artifactId: string; attempt: number; hookId: string; pass: boolean; severity: "info" | "warn" | "block"; issues: string[]; suggestedFix?: string; createdAt: string; }
+export interface WorkflowEvent { id: string; workflowId: string; stageId?: string | undefined; repairGroupId?: string | undefined; agentId?: string | undefined; event: string; details?: Record<string, unknown> | undefined; timestamp: string; }
 
 export type Theme = "system" | "light" | "dark" | "sepia" | "forest" | "ocean";
 export type AppFont = "system" | "serif" | "dyslexia" | "modern";

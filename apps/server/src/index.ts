@@ -7,6 +7,7 @@ import { JsonStore } from "./store.js";
 import type { PreferencesDatabase } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 import { AuthService } from "./auth.js";
+import { WorkflowService } from "./workflow-service.js";
 
 const config = loadConfig();
 await writeCodexConfig(config);
@@ -18,10 +19,11 @@ const runner = createRunner(config);
 const service = new AgentService(config, store, workspaces, runner);
 await preferences.initialize();
 const auth = new AuthService(store, config.contributorAccessKeys, preferences);
+const workflows = new WorkflowService(store, service);
 await service.initialize();
 await auth.initialize();
 
-const app = await createApp(config, service, auth);
+const app = await createApp(config, service, auth, workflows);
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");

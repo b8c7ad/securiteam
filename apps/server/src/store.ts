@@ -8,6 +8,12 @@ const emptyDatabase = (): Database => ({
   messages: [],
   runs: [],
   users: [],
+  workflows: [],
+  artifacts: [],
+  repairGroups: [],
+  reviewDecisions: [],
+  verificationResults: [],
+  workflowEvents: [],
 });
 
 export class JsonStore<T = Database> {
@@ -24,7 +30,17 @@ export class JsonStore<T = Database> {
       if (!parsed || typeof parsed !== "object" || !("version" in parsed)) {
         throw new Error("Unsupported database format");
       }
-      this.data = parsed;
+      const database = parsed as unknown as Database;
+      if (database.version !== 2) throw new Error("Unsupported database version");
+      this.data = {
+        ...database,
+        workflows: database.workflows ?? [],
+        artifacts: database.artifacts ?? [],
+        repairGroups: database.repairGroups ?? [],
+        reviewDecisions: database.reviewDecisions ?? [],
+        verificationResults: database.verificationResults ?? [],
+        workflowEvents: database.workflowEvents ?? [],
+      } as T;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;

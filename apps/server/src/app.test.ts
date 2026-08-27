@@ -76,4 +76,22 @@ describe("HTTP boundary", () => {
     await app.close();
     await rm(directory, { recursive: true, force: true });
   });
+
+  it("persists and returns account preferences", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "launchpad-preferences-"));
+    const store = new JsonStore(path.join(directory, "launchpad.json"));
+    const preferenceStore = new JsonStore(path.join(directory, "preferences.json"), { version: 1 as const, preferences: [] });
+    await store.initialize(); await preferenceStore.initialize();
+    const auth = new AuthService(store, [], preferenceStore);
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), service, auth);
+    const registered = await app.inject({ method: "POST", url: "/api/auth/register", payload: { username: "prefs", password: "password-1" } });
+    const cookie = registered.headers["set-cookie"];
+    const headers = { cookie: Array.isArray(cookie) ? cookie[0]! : cookie! };
+    const saved = await app.inject({ method: "PATCH", url: "/api/auth/preferences", headers, payload: { theme: "ocean", font: "modern" } });
+    expect(saved.statusCode).toBe(200);
+    const loaded = await app.inject({ method: "GET", url: "/api/auth/preferences", headers });
+    expect(loaded.statusCode).toBe(200);
+    expect((loaded.json() as { preferences: { theme: string; font: string } }).preferences).toMatchObject({ theme: "ocean", font: "modern" });
+    await app.close(); await rm(directory, { recursive: true, force: true });
+  });
 });

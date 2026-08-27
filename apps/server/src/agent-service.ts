@@ -213,6 +213,27 @@ export class AgentService {
     return { run, message };
   }
 
+  async runToCompletion(agentId: string, prompt: string, metadata?: { workflowId?: string; stageId?: string }): Promise<AgentRun> {
+    const result = await this.sendMessage(agentId, prompt);
+    if (metadata) await this.store.mutate((database) => {
+      const run = database.runs.find((item) => item.id === result.run.id);
+      const message = database.messages.find((item) => item.id === result.message.id);
+      if (run) {
+        if (metadata.workflowId) run.workflowId = metadata.workflowId;
+        if (metadata.stageId) run.stageId = metadata.stageId;
+      }
+      if (message) {
+        if (metadata.workflowId) message.workflowId = metadata.workflowId;
+        if (metadata.stageId) message.stageId = metadata.stageId;
+      }
+    });
+    for (;;) {
+      const run = this.getRun(result.run.id);
+      if (run.status === "completed" || run.status === "failed" || run.status === "cancelled") return run;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
   async systemInfo(): Promise<Record<string, unknown>> {
     return {
       arkConfigured: isArkConfigured(this.config),

@@ -9,6 +9,7 @@ import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { AuthService } from "./auth.js";
+import type { WorkflowService } from "./workflow-service.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -33,6 +34,7 @@ export async function createApp(
   config: AppConfig,
   service: AgentService,
   auth: AuthService,
+  workflows?: WorkflowService,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -133,6 +135,25 @@ export async function createApp(
   });
 
   app.get("/api/system", async () => service.systemInfo());
+
+  const workflowIdParams = z.object({ id: z.string().uuid() });
+  const stageParams = z.object({ id: z.string().uuid(), stageId: z.string().uuid() });
+  const workflowBody = z.object({ taskDescription: z.string().trim().min(1).max(50_000), templateId: z.string().optional(), createdBy: z.string().optional() });
+  const feedbackBody = z.object({ feedback: z.string().trim().min(1).max(50_000) });
+  const revisionBody = z.object({ prompt: z.string().trim().min(1).max(50_000) });
+  const editBody = z.object({ content: z.unknown() });
+  if (workflows) {
+    app.get("/api/workflows", async () => ({ workflows: workflows.list() }));
+    app.post("/api/workflows", async (request, reply) => reply.code(201).send({ workflow: await workflows.create(workflowBody.parse(request.body)) }));
+    app.get("/api/workflows/:id", async (request) => ({ workflow: workflows.get(workflowIdParams.parse(request.params).id) }));
+    app.get("/api/workflows/:id/events", async (request) => ({ events: workflows.events(workflowIdParams.parse(request.params).id) }));
+    app.get("/api/workflows/:id/conversation", async (request) => ({ messages: workflows.conversation(workflowIdParams.parse(request.params).id) }));
+    app.post("/api/workflows/:id/start", async (request) => ({ workflow: await workflows.start(workflowIdParams.parse(request.params).id) }));
+    app.post("/api/workflows/:id/stages/:stageId/approve", async (request) => { const p = stageParams.parse(request.params); return { workflow: await workflows.approve(p.id, p.stageId) }; });
+    app.post("/api/workflows/:id/stages/:stageId/reject", async (request) => { const p = stageParams.parse(request.params); return { workflow: await workflows.reject(p.id, p.stageId, feedbackBody.parse(request.body).feedback) }; });
+    app.post("/api/workflows/:id/stages/:stageId/revise", async (request) => { const p = stageParams.parse(request.params); return { workflow: await workflows.revise(p.id, p.stageId, revisionBody.parse(request.body).prompt) }; });
+    app.post("/api/workflows/:id/stages/:stageId/edit", async (request) => { const p = stageParams.parse(request.params); return { workflow: await workflows.edit(p.id, p.stageId, editBody.parse(request.body).content) }; });
+  }
 
   app.get("/api/agents", async () => ({ agents: service.listAgents() }));
 

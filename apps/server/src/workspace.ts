@@ -9,6 +9,16 @@ export class WorkspaceManager {
     return path.join(this.root, agentId);
   }
 
+  workflowStagePath(workflowId: string, stageId: string): string {
+    return path.join(this.root, "workflows", workflowId, stageId);
+  }
+
+  async createWorkflowStage(workflowId: string, stageId: string): Promise<string> {
+    const directory = this.workflowStagePath(workflowId, stageId);
+    await mkdir(directory, { recursive: true });
+    return directory;
+  }
+
   async initialize(): Promise<void> {
     await mkdir(this.root, { recursive: true });
     await mkdir(path.join(this.root, ".deleted"), { recursive: true });
