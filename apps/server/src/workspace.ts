@@ -1,4 +1,4 @@
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Agent } from "./types.js";
 
@@ -22,6 +22,32 @@ export class WorkspaceManager {
   async initialize(): Promise<void> {
     await mkdir(this.root, { recursive: true });
     await mkdir(path.join(this.root, ".deleted"), { recursive: true });
+  }
+
+  async describe(directory: string, maxChars = 16_000): Promise<string> {
+    const lines: string[] = [];
+    const ignored = new Set([".git", ".codex", "node_modules", "dist"]);
+    const visit = async (current: string, relative: string, depth: number): Promise<void> => {
+      if (depth > 3 || lines.join("\n").length >= maxChars) return;
+      for (const entry of await readdir(current, { withFileTypes: true })) {
+        if (ignored.has(entry.name)) continue;
+        const childRelative = relative ? relative + "/" + entry.name : entry.name;
+        const child = path.join(current, entry.name);
+        if (entry.isDirectory()) { lines.push("DIR " + childRelative); await visit(child, childRelative, depth + 1); continue; }
+        if (!entry.isFile()) continue;
+        lines.push("FILE " + childRelative);
+        try {
+          const info = await stat(child);
+          if (info.size <= 12_000 && /\.(md|txt|json|js|jsx|ts|tsx|css|html|yml|yaml|toml|py|sh)$/i.test(entry.name)) {
+            const content = await readFile(child, "utf8");
+            lines.push(content.slice(0, 2_000));
+          }
+        } catch { /* A changing workspace is still safe to summarize. */ }
+      }
+    };
+    try { await visit(directory, "", 0); } catch { return "Workspace is not readable."; }
+    const result = lines.join("\n");
+    return result.length <= maxChars ? result : result.slice(0, maxChars) + "\n[Workspace context truncated.]";
   }
 
   async create(agent: Agent): Promise<void> {

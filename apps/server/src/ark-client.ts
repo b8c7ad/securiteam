@@ -1,6 +1,7 @@
 import type { AppConfig } from "./config.js";
 
 const BYTEPLUS_MAX_TOKENS = 10_000;
+const VERIFIER_PROMPT_MAX_CHARS = 64_000;
 const SHORT_RESPONSE_INSTRUCTION = "Respond in at most 1-3 short sentences; return only the requested JSON.";
 
 export interface ArkVerifierResult { pass: boolean; severity: "info" | "warn" | "block"; issues: string[]; }
@@ -9,7 +10,8 @@ export async function verifyWithArk(config: AppConfig, prompt: string): Promise<
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30_000);
   try {
-    const response = await fetch(config.arkBaseUrl + "/chat/completions", { method: "POST", signal: controller.signal, headers: { "content-type": "application/json", authorization: "Bearer " + config.arkApiKey }, body: JSON.stringify({ model: config.arkModel, temperature: 0, max_tokens: BYTEPLUS_MAX_TOKENS, response_format: { type: "json_object" }, messages: [{ role: "user", content: prompt + "\n\n" + SHORT_RESPONSE_INSTRUCTION }] }) });
+    const boundedPrompt = prompt.length > VERIFIER_PROMPT_MAX_CHARS ? prompt.slice(0, VERIFIER_PROMPT_MAX_CHARS) + "\n[Verifier input truncated.]" : prompt;
+    const response = await fetch(config.arkBaseUrl + "/chat/completions", { method: "POST", signal: controller.signal, headers: { "content-type": "application/json", authorization: "Bearer " + config.arkApiKey }, body: JSON.stringify({ model: config.arkModel, temperature: 0, max_tokens: BYTEPLUS_MAX_TOKENS, response_format: { type: "json_object" }, messages: [{ role: "user", content: boundedPrompt + "\n\n" + SHORT_RESPONSE_INSTRUCTION }] }) });
     if (!response.ok) throw new Error("Verifier returned HTTP " + response.status);
     const body = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
     const content = body.choices?.[0]?.message?.content;

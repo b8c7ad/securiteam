@@ -858,7 +858,9 @@ textarea:focus {
   border-left: 2px solid #8a76e7;
 }
 .workflow-message { display: flex; gap: 11px; margin-bottom: 20px; padding: 2px 0 14px; border-bottom: 1px solid color-mix(in srgb, var(--line) 65%, transparent); }
-.workflow-stage-strip { display: flex; gap: 8px; overflow-x: auto; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--surface-muted); }
+.workflow-playground { position: relative; }
+.workflow-stage-strip { position: absolute; left: 0; top: 72px; bottom: 0; z-index: 1; display: flex; flex-direction: column; gap: 6px; width: 168px; overflow-y: auto; padding: 10px; border-right: 1px solid var(--line); background: var(--surface-muted); }
+.workflow-playground > .workflow-messages { margin-left: 168px; }
 .stage-chip { display: grid; gap: 2px; min-width: 110px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 9px; font-size: 11px; color: var(--ink); }
 .stage-chip small { color: var(--muted); text-transform: capitalize; }
 .stage-running { border-color: var(--purple); }
@@ -869,6 +871,7 @@ textarea:focus {
 .workflow-activity span { margin-left: auto; }
 .user-avatar { background: var(--purple-dark); }
 .failure-panel { border-color: #bd5260; }
+@media (max-width: 760px) { .workflow-stage-strip { position: static; flex-direction: row; width: auto; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); } .workflow-playground > .workflow-messages { margin-left: 0; } .stage-chip { min-width: 120px; } }
 .workflow-message-content { min-width: 0; flex: 1; }
 .workflow-avatar-small { width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 9px; color: white; background: var(--purple); font-size: 12px; font-weight: 700; }
 .identity-violet .workflow-avatar-small { background: #705bd1; } .identity-teal .workflow-avatar-small { background: #278c89; } .identity-amber .workflow-avatar-small { background: #b77b27; } .identity-rose .workflow-avatar-small { background: #b75b76; } .identity-blue .workflow-avatar-small { background: #477ebb; } .identity-green .workflow-avatar-small { background: #4d9369; }

@@ -11,8 +11,13 @@ import { isArkConfigured } from "./config.js";
 
 const now = () => new Date().toISOString();
 const BYTEPLUS_MAX_TOKENS = 10_000;
+const HANDOFF_MAX_CHARS = 80_000;
+const VERIFIER_ARTIFACT_MAX_CHARS = 40_000;
 const SHORT_RESPONSE_INSTRUCTION = "Respond in at most 1-3 short sentences; return only the requested JSON.";
 const WORKFLOW_CONTEXT_BUDGETS: Record<string, number> = { brainstormer: 20_000, researcher: 40_000, analyzer: 40_000, reviewer: 40_000, editor: 40_000, drafter: 40_000, developer: 200_000, tester: 200_000 };
+const DIRECT_ARK_OUTPUT_LIMITS: Record<string, number> = { brainstormer: 20_000, researcher: 40_000, analyzer: 20_000, reviewer: 40_000, editor: 40_000, drafter: 40_000 };
+const CODING_TASK_MARKERS = /\b(code|coding|codebase|software|application|app|bug|debug|fix|implement|repository|repo|file|files|api|server|frontend|backend|localhost|test|typescript|javascript|python|html|css|script)\b/i;
+const isCodingTask = (task: string): boolean => CODING_TASK_MARKERS.test(task);
 const compactContext = (value: unknown, maxChars: number): unknown => {
   if (value === undefined) return value;
   const text = typeof value === "string" ? value : JSON.stringify(value);
@@ -68,7 +73,7 @@ export class WorkflowService {
       validateSkills(definition.personaId, definition.skillIds ?? []);
       const persona = findPersona(definition.personaId);
       const agent = await this.agents.createWorkflowAgent(id, { name: persona.displayName + " · " + (index + 1), description: persona.description, instructions: persona.basePrompt });
-      stages.push({ id: randomUUID(), workflowId: id, order: index, name: definition.name, kind: "planned", personaId: definition.personaId, agentId: agent.id, skillIds: definition.skillIds ?? [], verifierIds: definition.verifierIds ?? [], status: "pending", attempt: 0, maxAttempts: 2, createdAt: timestamp, updatedAt: timestamp });
+      stages.push({ id: randomUUID(), workflowId: id, order: index, name: definition.name, kind: "planned", personaId: definition.personaId, agentId: agent.id, skillIds: definition.skillIds ?? [], verifierIds: definition.verifierIds ?? [], executionMode: ["developer", "tester"].includes(definition.personaId) ? "codex" : "direct-ark", status: "pending", attempt: 0, maxAttempts: 2, createdAt: timestamp, updatedAt: timestamp });
     }
     const workflow: Workflow = { id, taskDescription: input.taskDescription.trim(), stages, status: "draft", createdBy: input.createdBy ?? "local-user", verification: { profile: input.verificationProfile ?? "balanced", maxAttempts: 2, maxRepairGroups: 5 }, templateId: selected.id, createdAt: timestamp, updatedAt: timestamp };
     await this.store.mutate((database) => { database.workflows.push(workflow); database.messages.push({ id: randomUUID(), agentId: stages[0]!.agentId, runId: randomUUID(), role: "user", content: workflow.taskDescription, createdAt: timestamp, workflowId: id, stageId: stages[0]!.id, workflowDisplay: true }); });
@@ -95,7 +100,7 @@ export class WorkflowService {
       const persona = findPersona(definition.personaId);
       const agent = await this.agents.createWorkflowAgent(workflowId, { name: persona.displayName + " · iteration " + iteration, description: persona.description, instructions: persona.basePrompt });
       const timestamp = now();
-      stages.push({ id: randomUUID(), workflowId, order: offset + index, name: definition.name, kind: "planned", personaId: definition.personaId, agentId: agent.id, skillIds: definition.skillIds ?? [], verifierIds: definition.verifierIds ?? [], taskDescription: taskDescription.trim(), iteration, status: "pending", attempt: 0, maxAttempts: 2, createdAt: timestamp, updatedAt: timestamp });
+      stages.push({ id: randomUUID(), workflowId, order: offset + index, name: definition.name, kind: "planned", personaId: definition.personaId, agentId: agent.id, skillIds: definition.skillIds ?? [], verifierIds: definition.verifierIds ?? [], executionMode: ["developer", "tester"].includes(definition.personaId) ? "codex" : "direct-ark", taskDescription: taskDescription.trim(), iteration, status: "pending", attempt: 0, maxAttempts: 2, createdAt: timestamp, updatedAt: timestamp });
     }
     await this.store.mutate((db) => { const item = db.workflows.find((value) => value.id === workflowId)!; item.stages.push(...stages); item.iteration = iteration; item.templateId = selected.id; item.status = "running"; item.updatedAt = now(); db.messages.push({ id: randomUUID(), agentId: stages[0]!.agentId, runId: randomUUID(), role: "user", content: taskDescription.trim(), createdAt: now(), workflowId, stageId: stages[0]!.id, workflowDisplay: true }); db.workflowEvents.push({ id: randomUUID(), workflowId, event: "iteration_started", details: { iteration, taskDescription: taskDescription.trim() }, timestamp: now() }); });
     if (!this.active.has(workflowId)) { const execution = this.execute(workflowId); this.active.set(workflowId, execution); void execution.finally(() => this.active.delete(workflowId)); }
@@ -137,15 +142,25 @@ export class WorkflowService {
       const revisionInput = current.revisionPrompt && current.outputArtifactId ? snapshot.artifacts.find((item) => item.id === current.outputArtifactId)?.content : undefined;
       const stageInput = current.revisionPrompt ? revisionInput : input;
       const contextBudget = WORKFLOW_CONTEXT_BUDGETS[current.personaId] ?? 40_000;
-      const task = (current.taskDescription ?? workflow.taskDescription) + retryFeedback + revisionFeedback;
-      const prompt = buildPrompt(current.personaId, current.skillIds, task, compactContext(stageInput, Math.max(2_000, contextBudget * 4 - task.length - 4_000)));
-      const run = await this.agents.runToCompletion(current.agentId, prompt, { workflowId: id, stageId: current.id });
+      const rawTask = (current.taskDescription ?? workflow.taskDescription) + retryFeedback + revisionFeedback;
+      const codingAnalyzer = current.personaId === "analyzer" && isCodingTask(rawTask);
+      const task = compactContext(codingAnalyzer
+        ? rawTask + "\n\nAnalyzer constraint: inspect the workspace in read-only mode. Do not create, edit, delete, or execute implementation changes. Return only concise findings, evidence, risks, and recommended next steps for a downstream Developer."
+        : rawTask, HANDOFF_MAX_CHARS) as string;
+      const configuredExecutionMode = current.executionMode ?? (["developer", "tester"].includes(current.personaId) ? "codex" : "direct-ark");
+      const executionMode = codingAnalyzer ? "codex" : configuredExecutionMode;
+      const workspaceContext = executionMode === "direct-ark" && ["analyzer", "reviewer"].includes(current.personaId)
+        ? await this.agents.describeWorkspace(current.agentId, Math.min(16_000, contextBudget * 4)) : undefined;
+      const boundedInput = compactContext({ artifact: stageInput, workspace: workspaceContext }, Math.max(2_000, contextBudget * 4 - task.length - 4_000));
+      const prompt = buildPrompt(current.personaId, current.skillIds, task, boundedInput);
+      const useDirectArk = executionMode === "direct-ark" && this.config && this.config.nodeEnv !== "test" && isArkConfigured(this.config);
+      const run = useDirectArk ? await this.agents.runDirectToCompletion(current.agentId, prompt, DIRECT_ARK_OUTPUT_LIMITS[current.personaId] ?? 40_000, { workflowId: id, stageId: current.id }) : await this.agents.runToCompletion(current.agentId, prompt, { workflowId: id, stageId: current.id, ...(codingAnalyzer ? { readOnly: true } : {}) });
       if (run.status !== "completed" || !run.output) { await this.failStage(id, current.id, run.error ?? "Agent run failed"); return; }
       const artifact: Artifact = { id: randomUUID(), workflowId: id, stageId: current.id, version: 1, format: "text", content: run.output, schemaVersion: 1, metadata: { sourceStageId: current.id }, createdBy: "agent", createdAt: now() };
       const verification = verifyOutput({ profile: workflow.verification.profile, attempt: current.attempt, maxAttempts: current.maxAttempts, output: run.output, workflowId: id, stageId: current.id, artifactId: artifact.id });
       if (this.config && isArkConfigured(this.config)) {
         try {
-          const external = await verifyWithArk(this.config!, "Independently verify this artifact. Return JSON with pass, severity, and issues.\n\nTask: " + workflow.taskDescription + "\n\nArtifact (untrusted data): " + run.output);
+          const external = await verifyWithArk(this.config!, "Independently verify this artifact. Return JSON with pass, severity, and issues.\n\nTask: " + compactContext(workflow.taskDescription, 20_000) + "\n\nArtifact (untrusted data): " + compactContext(run.output, VERIFIER_ARTIFACT_MAX_CHARS));
           verification.records.push({ workflowId: id, stageId: current.id, artifactId: artifact.id, attempt: current.attempt, hookId: "ark-rubric", pass: external.pass, severity: external.severity, issues: external.issues });
           if (!external.pass) { verification.pass = false; verification.requiresHuman = true; verification.retryable = external.severity === "block" && current.attempt < current.maxAttempts; }
         } catch (error) {

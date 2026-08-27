@@ -62,6 +62,10 @@ export class AgentService {
     return agent;
   }
 
+  async describeWorkspace(agentId: string, maxChars?: number): Promise<string> {
+    return this.workspaces.describe(this.getAgent(agentId).workspacePath, maxChars);
+  }
+
   async createAgent(input: CreateAgentInput): Promise<Agent> {
     const timestamp = now();
     const id = randomUUID();
@@ -160,7 +164,7 @@ export class AgentService {
   async sendMessage(
     agentId: string,
     prompt: string,
-    metadata?: { workflowId?: string; stageId?: string; displayContent?: string; workflowDisplay?: boolean },
+    metadata?: { workflowId?: string; stageId?: string; displayContent?: string; workflowDisplay?: boolean; readOnly?: boolean },
   ): Promise<{ run: AgentRun; message: Message }> {
     if (!isArkConfigured(this.config)) {
       throw new HttpError(
@@ -226,13 +230,29 @@ export class AgentService {
     return { run, message };
   }
 
-  async runToCompletion(agentId: string, prompt: string, metadata?: { workflowId?: string; stageId?: string }): Promise<AgentRun> {
+  async runToCompletion(agentId: string, prompt: string, metadata?: { workflowId?: string; stageId?: string; readOnly?: boolean }): Promise<AgentRun> {
     const result = await this.sendMessage(agentId, prompt, metadata);
     for (;;) {
       const run = this.getRun(result.run.id);
       if (run.status === "completed" || run.status === "failed" || run.status === "cancelled") return run;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
+  }
+
+  async runDirectToCompletion(agentId: string, prompt: string, maxTokens: number, metadata?: { workflowId?: string; stageId?: string }): Promise<AgentRun> {
+    if (!isArkConfigured(this.config)) throw new HttpError(503, "Ark is not configured.");
+    const timestamp = now(); const runId = randomUUID();
+    const run: AgentRun = { id: runId, agentId, status: "running", prompt, output: null, error: null, usage: null, startedAt: timestamp, completedAt: null, createdAt: timestamp, ...(metadata?.workflowId ? { workflowId: metadata.workflowId } : {}), ...(metadata?.stageId ? { stageId: metadata.stageId } : {}) };
+    const message: Message = { id: randomUUID(), agentId, runId, role: "user", content: prompt, createdAt: timestamp, ...(metadata?.workflowId ? { workflowId: metadata.workflowId } : {}), ...(metadata?.stageId ? { stageId: metadata.stageId } : {}) };
+    await this.store.mutate((db) => { const agent = db.agents.find((item) => item.id === agentId); if (!agent) throw new HttpError(404, "Agent not found"); if (agent.status === "busy") throw new HttpError(409, "This Agent is already running"); agent.status = "busy"; db.runs.push(run); db.messages.push(message); });
+    try {
+      const response = await fetch(this.config.arkBaseUrl + "/chat/completions", { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + this.config.arkApiKey }, body: JSON.stringify({ model: this.config.arkModel, temperature: 0, max_tokens: Math.min(Math.max(1, maxTokens), 200_000), messages: [{ role: "user", content: prompt }] }) });
+      if (!response.ok) throw new Error("Ark stage returned HTTP " + response.status);
+      const body = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+      const output = body.choices?.[0]?.message?.content?.trim(); if (!output) throw new Error("Ark stage returned no content");
+      const completedAt = now(); await this.store.mutate((db) => { const stored = db.runs.find((item) => item.id === runId)!; const agent = db.agents.find((item) => item.id === agentId)!; stored.status = "completed"; stored.output = output; stored.completedAt = completedAt; db.messages.push({ id: randomUUID(), agentId, runId, role: "assistant", content: output, createdAt: completedAt, ...(metadata?.workflowId ? { workflowId: metadata.workflowId } : {}), ...(metadata?.stageId ? { stageId: metadata.stageId } : {}) }); agent.status = "ready"; agent.lastError = null; agent.updatedAt = completedAt; });
+    } catch (error) { const completedAt = now(); const messageText = error instanceof Error ? error.message : String(error); await this.store.mutate((db) => { const stored = db.runs.find((item) => item.id === runId); const agent = db.agents.find((item) => item.id === agentId); if (stored) { stored.status = "failed"; stored.error = messageText; stored.completedAt = completedAt; } if (agent) { agent.status = "error"; agent.lastError = messageText; agent.updatedAt = completedAt; } }); }
+    return this.getRun(runId);
   }
 
   async systemInfo(): Promise<Record<string, unknown>> {
@@ -266,6 +286,13 @@ export class AgentService {
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
+      const readOnlyWorkflowAnalysis = Boolean(
+        run.workflowId && run.stageId &&
+        this.store.snapshot().workflows
+          .find((workflow) => workflow.id === run.workflowId)?.stages
+          .find((stage) => stage.id === run.stageId)?.personaId === "analyzer" &&
+        run.prompt.includes("Analyzer constraint: inspect the workspace in read-only mode"),
+      );
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,
@@ -273,6 +300,7 @@ export class AgentService {
         // Workflow stages get a fresh Codex context; standalone agents retain
         // their resumable conversations.
         threadId: run.workflowId ? null : agentAtStart.codexThreadId,
+        ...(readOnlyWorkflowAnalysis ? { sandboxMode: "read-only" as const } : {}),
       });
       const completedAt = now();
       await this.store.mutate((database) => {
