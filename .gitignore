@@ -15,4 +15,4 @@ deploy/volcengine/.terraform/
 deploy/volcengine/*.tfstate*
 deploy/volcengine/terraform.tfvars
 get-docker.sh
-plan.md
+*.md
