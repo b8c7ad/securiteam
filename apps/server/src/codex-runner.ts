@@ -33,6 +33,9 @@ export function buildCodexArgs(
     "-C",
     workspacePath,
   ];
+  if (request.reasoningEffort) {
+    args.push("-c", `model_reasoning_effort=\"${request.reasoningEffort}\"`);
+  }
   if (request.threadId) {
     args.push("resume", request.threadId, request.prompt);
   } else {
@@ -161,7 +164,7 @@ export class CodexRunner implements AgentRunner {
 
     const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
       totalBytes += chunk.byteLength;
-      if (totalBytes > this.config.codexMaxOutputBytes) {
+      if (totalBytes > (request.maxOutputBytes ?? this.config.codexMaxOutputBytes)) {
         active.outputExceeded = true;
         this.terminate(active);
         return;
@@ -187,7 +190,7 @@ export class CodexRunner implements AgentRunner {
     const timeout = setTimeout(() => {
       active.timedOut = true;
       this.terminate(active);
-    }, this.config.codexTimeoutMs);
+    }, request.timeoutMs ?? this.config.codexTimeoutMs);
     timeout.unref();
 
     try {
@@ -202,10 +205,10 @@ export class CodexRunner implements AgentRunner {
         throw new RunCancelledError();
       }
       if (active.timedOut) {
-        throw new Error("Codex timed out after " + this.config.codexTimeoutMs + " ms");
+        throw new Error("Codex timed out after " + (request.timeoutMs ?? this.config.codexTimeoutMs) + " ms");
       }
       if (active.outputExceeded) {
-        throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
+        throw new Error("Codex output exceeded the per-run output limit");
       }
       if (exitCode !== 0) {
         const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";

@@ -72,7 +72,7 @@ export interface Database {
 export interface VerificationSettings { profile: VerificationProfile; maxAttempts: number; maxRepairGroups: number; }
 export interface Workflow { id: string; taskDescription: string; stages: Stage[]; status: WorkflowStatus; createdBy: string; verification: VerificationSettings; templateId?: string; iteration?: number; createdAt: string; updatedAt: string; }
 export interface Stage { id: string; workflowId: string; order: number; name: string; kind: StageKind; repairGroupId?: string; insertedAfterStageId?: string; personaId: string; agentId: string; skillIds: string[]; verifierIds: string[]; executionMode?: StageExecutionMode; userFlair?: string; revisionPrompt?: string; taskDescription?: string; iteration?: number; status: StageStatus; inputArtifactId?: string; outputArtifactId?: string; attempt: number; maxAttempts: number; lastError?: string; createdAt: string; updatedAt: string; }
-export interface Artifact { id: string; workflowId: string; stageId: string; version: number; parentArtifactId?: string; format: "text" | "markdown" | "json" | "code"; content: unknown; schemaVersion: number; confidence?: number; flaggedForReview?: boolean; rationale?: string; metadata: Record<string, unknown>; createdBy: "agent" | "verifier" | "human"; createdAt: string; }
+export interface Artifact { id: string; workflowId: string; stageId: string; version: number; parentArtifactId?: string; format: "text" | "markdown" | "json" | "code"; content: unknown; handoffContent?: string; schemaVersion: number; confidence?: number; flaggedForReview?: boolean; rationale?: string; metadata: Record<string, unknown>; createdBy: "agent" | "verifier" | "human"; createdAt: string; }
 export type HumanReviewAction = "approve" | "edit" | "reject" | "revise" | "skip";
 export interface ReviewDecision { id: string; workflowId: string; stageId: string; artifactId: string; action: HumanReviewAction; feedback?: string | undefined; prompt?: string | undefined; editedArtifactId?: string | undefined; createdBy: string; createdAt: string; }
 export interface RepairGroup { id: string; workflowId: string; sourceStageId: string; sourceArtifactId: string; trigger: "human_edit" | "human_rejection" | "human_prompt"; feedback?: string | undefined; prompt?: string | undefined; stageIds: string[]; status: "pending" | "running" | "completed" | "failed"; createdAt: string; completedAt?: string | undefined; }
@@ -118,6 +118,9 @@ export interface RunnerRequest {
   prompt: string;
   threadId: string | null;
   sandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
+  reasoningEffort?: "low" | "medium" | "high";
+  maxOutputBytes?: number;
+  timeoutMs?: number;
 }
 
 export interface AgentRunner {

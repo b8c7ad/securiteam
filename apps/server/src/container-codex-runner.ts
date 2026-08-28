@@ -84,7 +84,7 @@ export function buildContainerRunArgs(
     "/workspace",
     config.containerRuntimeImage,
     "codex",
-    ...buildCodexArgs(request, config.codexSandboxMode, "/workspace"),
+    ...buildCodexArgs(request, request.sandboxMode ?? config.codexSandboxMode, "/workspace"),
   ];
 }
 
@@ -178,7 +178,7 @@ export class ContainerCodexRunner implements AgentRunner {
 
     const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
       totalBytes += chunk.byteLength;
-      if (totalBytes > this.config.codexMaxOutputBytes) {
+      if (totalBytes > (request.maxOutputBytes ?? this.config.codexMaxOutputBytes)) {
         active.outputExceeded = true;
         void this.removeContainer(active);
         return;
@@ -200,7 +200,7 @@ export class ContainerCodexRunner implements AgentRunner {
     const timeout = setTimeout(() => {
       active.timedOut = true;
       void this.removeContainer(active);
-    }, this.config.codexTimeoutMs);
+    }, request.timeoutMs ?? this.config.codexTimeoutMs);
     timeout.unref();
 
     try {
@@ -211,10 +211,10 @@ export class ContainerCodexRunner implements AgentRunner {
       if (stdout.trim()) parseCodexEventLine(stdout.trim(), parsed);
       if (active.cancelled) throw new RunCancelledError();
       if (active.timedOut) {
-        throw new Error("Runtime timed out after " + this.config.codexTimeoutMs + " ms");
+        throw new Error("Runtime timed out after " + (request.timeoutMs ?? this.config.codexTimeoutMs) + " ms");
       }
       if (active.outputExceeded) {
-        throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
+        throw new Error("Codex output exceeded the per-run output limit");
       }
       if (exitCode !== 0) {
         const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";

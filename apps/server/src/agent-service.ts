@@ -293,14 +293,24 @@ export class AgentService {
           .find((stage) => stage.id === run.stageId)?.personaId === "analyzer" &&
         run.prompt.includes("Analyzer constraint: inspect the workspace in read-only mode"),
       );
+      const workflowPersona = run.workflowId && run.stageId
+        ? this.store.snapshot().workflows.find((workflow) => workflow.id === run.workflowId)?.stages.find((stage) => stage.id === run.stageId)?.personaId
+        : undefined;
+      const reasoningEffort = workflowPersona === "brainstormer" || workflowPersona === "analyzer"
+        ? "low" : workflowPersona === "tester" ? "medium" : undefined;
+      const maxOutputBytes = workflowPersona === "tester" ? 512 * 1024 : workflowPersona === "analyzer" ? 768 * 1024 : undefined;
+      const timeoutMs = workflowPersona === "tester" ? 240_000 : undefined;
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,
         prompt: run.prompt,
-        // Workflow stages get a fresh Codex context; standalone agents retain
-        // their resumable conversations.
-        threadId: run.workflowId ? null : agentAtStart.codexThreadId,
+        // New workflow agents start fresh; continuation stages reuse matching
+        // agents and therefore resume their existing Codex conversation.
+        threadId: agentAtStart.codexThreadId,
         ...(readOnlyWorkflowAnalysis ? { sandboxMode: "read-only" as const } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(maxOutputBytes ? { maxOutputBytes } : {}),
+        ...(timeoutMs ? { timeoutMs } : {}),
       });
       const completedAt = now();
       await this.store.mutate((database) => {
