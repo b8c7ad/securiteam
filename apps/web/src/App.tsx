@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, setAuthToken } from "./api";
+import { api, ApiError, setAuthToken, setCredentials } from "./api";
 import type {
   Agent,
   AgentRun,
@@ -119,11 +119,17 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
-  const [showRegister, setShowRegister] = useState(false);
+  const [authMode, setAuthMode] = useState<"login" | "register" | "recover">("login");
+  const [securityKey, setSecurityKey] = useState("");
+  const [showSignInPassword, setShowSignInPassword] = useState(false);
+  const [showRegistrationPassword, setShowRegistrationPassword] = useState(false);
+  const [showSecurityKey, setShowSecurityKey] = useState(false);
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [showAccountSettings, setShowAccountSettings] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<"security" | "preferences">(
-    "security",
+  const [settingsTab, setSettingsTab] = useState<"password" | "preferences">(
+    "password",
   );
   const [theme, setTheme] = useState<Theme>("system");
   const [appFont, setAppFont] = useState<AppFont>("system");
@@ -132,13 +138,26 @@ export default function App() {
   const [password, setPassword] = useState("");
   const [honeypot, setHoneypot] = useState("");
   const [newPassword, setNewPassword] = useState("");
-  const [authInput, setAuthInput] = useState("");
   const [registerPassword, setRegisterPassword] = useState("");
   const messageEnd = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
   selectedIdRef.current = selectedId;
+
+  const clearWorkspaceState = useCallback(() => {
+    setAgents([]);
+    setSelectedId(null);
+    setMessages([]);
+    setWorkflows([]);
+    setSelectedWorkflowId(null);
+    setWorkflowMessages([]);
+    setWorkflowEvents([]);
+    setActiveRun(null);
+    setError(null);
+    setShowSettings(false);
+    setShowProfile(false);
+  }, []);
 
   useEffect(() => {
     // Authentication always uses the browser's system appearance and font;
@@ -430,12 +449,15 @@ export default function App() {
     setError(null);
     try {
       const result = await api.login(username, password, honeypot);
+      setCredentials({ username, password });
+      clearWorkspaceState();
       const preferences = await api.preferences();
       setTheme(preferences.preferences.theme as Theme);
       setAppFont(preferences.preferences.font as AppFont);
       setUser(result.user);
       await bootstrap();
       setAuthRequired(false);
+      setAuthMode("login");
       setUsername("");
       setPassword("");
     } catch (reason) {
@@ -454,11 +476,17 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      const result = await api.register(username, registerPassword);
+      const result = await api.register(username, registerPassword, securityKey);
+      setCredentials({ username, password: registerPassword });
+      clearWorkspaceState();
+      setTheme("system");
+      setAppFont("system");
       setUser(result.user);
       setAuthRequired(false);
+      setAuthMode("login");
       setUsername("");
       setRegisterPassword("");
+      setSecurityKey("");
       await bootstrap();
     } catch (reason) {
       setError(
@@ -473,18 +501,41 @@ export default function App() {
     }
   };
 
-  const updatePassword = async (event: React.FormEvent) => {
+  const recoverPassword = async (event: React.FormEvent) => {
     event.preventDefault();
+    setBusy(true);
     setError(null);
     try {
-      await api.changePassword(authInput, newPassword);
-      setAuthInput("");
+      await api.resetPassword(username, securityKey, newPassword);
+      setAuthMode("login");
+      setPassword("");
       setNewPassword("");
-      setShowAccountSettings(false);
+      setSecurityKey("");
+      setError("Password reset. You can now sign in with your new password.");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
     }
   };
+
+  const changePassword = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!user) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.changePassword(newPassword);
+      setCredentials({ username: user.username, password: newPassword });
+      setNewPassword("");
+      setError("Password updated.");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
 
   const updatePreferences = (nextTheme: Theme, nextFont: AppFont) => {
     setTheme(nextTheme);
@@ -593,16 +644,18 @@ export default function App() {
   if (authRequired) {
     return (
       <main className="auth-screen">
-        <form className="auth-card" onSubmit={showRegister ? register : unlock}>
+        <form className="auth-card" onSubmit={authMode === "register" ? register : authMode === "recover" ? recoverPassword : unlock}>
           <div className="brand-mark">A</div>
           <span className="eyebrow">Agent Launchpad</span>
           <h1>
-            {showRegister ? "Create your account" : "Sign in to Launchpad"}
+            {authMode === "register" ? "Create your account" : authMode === "recover" ? "Reset your password" : "Sign in to Launchpad"}
           </h1>
           <p>
-            {showRegister
-              ? "Create an account to save your agents and workspace sessions."
-              : "Your account is identified only by a username and password."}
+            {authMode === "register"
+              ? "Create an account to save your agents and preferences."
+              : authMode === "recover"
+                ? "Enter your username, security key, and a new password."
+                : "Enter your username and password."}
           </p>
           {error && (
             <div className="error-banner" role="alert">
@@ -620,58 +673,93 @@ export default function App() {
             />
           </label>
           <label>
-            Password
-            <input
-              type="password"
-              value={showRegister ? registerPassword : password}
-              onChange={(event) =>
-                showRegister
-                  ? setRegisterPassword(event.target.value)
-                  : setPassword(event.target.value)
-              }
-              autoComplete={showRegister ? "new-password" : "current-password"}
-              minLength={8}
-              required
-            />
-          </label>
-          {!showRegister && (
-            <label className="trap-field" aria-hidden="true">
-              Leave blank
+            {authMode === "recover" ? "New password" : "Password"}
+            <span className="password-field">
               <input
-                tabIndex={-1}
-                value={honeypot}
-                onChange={(event) => setHoneypot(event.target.value)}
+                type={authMode === "login" ? (showSignInPassword ? "text" : "password") : (showRegistrationPassword ? "text" : "password")}
+                value={authMode === "register" ? registerPassword : authMode === "recover" ? newPassword : password}
+                onChange={(event) =>
+                  authMode === "register"
+                    ? setRegisterPassword(event.target.value)
+                    : authMode === "recover"
+                      ? setNewPassword(event.target.value)
+                      : setPassword(event.target.value)
+                }
+                autoComplete={authMode === "login" ? "current-password" : "new-password"}
+                minLength={8}
+                required
               />
-            </label>
-          )}
+              <button type="button" className="password-toggle" onClick={() => authMode === "login" ? setShowSignInPassword((value) => !value) : setShowRegistrationPassword((value) => !value)}>
+                {(authMode === "login" ? showSignInPassword : showRegistrationPassword) ? "Hide password" : "Show password"}
+              </button>
+            </span>
+          </label>
+          {authMode !== "login" && <label>
+            {authMode === "recover" ? "Security key" : "Create a security key"}
+            <span className="password-field">
+              <input
+                type={showSecurityKey ? "text" : "password"}
+                value={securityKey}
+                onChange={(event) => setSecurityKey(event.target.value)}
+                minLength={3}
+                required
+              />
+              <button
+                type="button"
+                className="password-toggle"
+                onClick={() => setShowSecurityKey((value) => !value)}
+              >
+                {showSecurityKey ? "Hide security key" : "Show security key"}
+              </button>
+            </span>
+          </label>}
+          {authMode === "login" && <label className="trap-field" aria-hidden="true">
+            Leave blank
+            <input
+              tabIndex={-1}
+              value={honeypot}
+              onChange={(event) => setHoneypot(event.target.value)}
+            />
+          </label>}
           <button
             className="button button-primary"
             disabled={
               busy ||
               !username.trim() ||
-              !(showRegister ? registerPassword : password)
+              !(authMode === "register" ? registerPassword : authMode === "recover" ? newPassword : password) ||
+              (authMode !== "login" && !securityKey.trim())
             }
           >
             {busy ? (
               <Spinner />
-            ) : showRegister ? (
-              "Create account"
-            ) : (
-              "Open Launchpad"
-            )}
+            ) : authMode === "register" ? "Create account" : authMode === "recover" ? "Reset password" : "Open Launchpad"}
           </button>
-          <button
+          {authMode !== "recover" && <button
             type="button"
             className="auth-link"
             onClick={() => {
-              setShowRegister((v) => !v);
+              setAuthMode(authMode === "register" ? "login" : "register");
               setError(null);
             }}
           >
-            {showRegister
+            {authMode === "register"
               ? "Already have an account? Sign in"
               : "Create account"}
-          </button>
+          </button>}
+          {authMode === "login" && <button
+            type="button"
+            className="auth-link"
+            onClick={() => { setAuthMode("recover"); setError(null); }}
+          >
+            Forgot password?
+          </button>}
+          {authMode === "recover" && <button
+            type="button"
+            className="auth-link"
+            onClick={() => { setAuthMode("login"); setError(null); }}
+          >
+            Back to sign in
+          </button>}
         </form>
       </main>
     );
@@ -802,8 +890,21 @@ export default function App() {
                 </button>
                 <button
                   onClick={async () => {
-                    await api.logout();
+                    try {
+                      await api.logout();
+                    } catch (reason) {
+                      setError(reason instanceof Error ? reason.message : String(reason));
+                    }
+                    clearWorkspaceState();
+                    setCredentials(null);
+                    setTheme("system");
+                    setAppFont("system");
                     setUser(null);
+                    setAuthMode("login");
+                    setUsername("");
+                    setPassword("");
+                    setRegisterPassword("");
+                    setSecurityKey("");
                     setAuthRequired(true);
                   }}
                 >
@@ -906,14 +1007,18 @@ export default function App() {
               >
                 {selectedWorkflow.stages
                   .filter((stage) => stage.kind === "planned")
-                  .map((stage) => (
-                    <span
-                      className={`stage-chip stage-${stage.status}`}
+                  .map((stage, index, stages) => (
+                    <div
+                      className={`stage-node stage-${stage.status}`}
                       key={stage.id}
                     >
-                      {stage.name}
-                      <small>{stage.status.replace("_", " ")}</small>
-                    </span>
+                      <span className="stage-node-marker" aria-hidden="true" />
+                      <span className="stage-node-copy">
+                        <strong>{stage.name}</strong>
+                        <small>{stage.status.replace("_", " ")}</small>
+                      </span>
+                      {index < stages.length - 1 ? <span className="stage-node-line" aria-hidden="true" /> : null}
+                    </div>
                   ))}
               </div>
               <div className="messages workflow-messages">
@@ -1412,65 +1517,51 @@ export default function App() {
             <div className="account-settings-body">
               <nav className="settings-nav" aria-label="Settings sections">
                 <button
-                  className={`settings-nav-item ${settingsTab === "security" ? "active" : ""}`}
+                  className={`settings-nav-item ${settingsTab === "password" ? "active" : ""}`}
                   type="button"
-                  onClick={() => setSettingsTab("security")}
+                  onClick={() => setSettingsTab("password")}
                 >
-                  Security
+                  Reset password
                 </button>
                 <button
                   className={`settings-nav-item ${settingsTab === "preferences" ? "active" : ""}`}
                   type="button"
                   onClick={() => setSettingsTab("preferences")}
                 >
-                  Preferences
+                  Theme
                 </button>
               </nav>
-              {settingsTab === "security" ? (
-                <div className="settings-section">
-                  <span className="eyebrow">Security</span>
-                  <h3>Change password</h3>
+              {settingsTab === "password" ? (
+                <form className="settings-section" onSubmit={changePassword}>
+                  <span className="eyebrow">Password</span>
+                  <h3>Reset password</h3>
                   <p className="settings-help">
-                    Use a strong password with at least 8 characters.
+                    Choose a new password. Your current signed-in session confirms this change.
                   </p>
-                  <form onSubmit={updatePassword}>
-                    <label>
-                      Current password
+                  <label>
+                    New password
+                    <span className="password-field">
                       <input
-                        autoFocus
-                        type="password"
-                        value={authInput}
-                        onChange={(event) => setAuthInput(event.target.value)}
-                        autoComplete="current-password"
-                        required
-                      />
-                    </label>
-                    <label>
-                      New password
-                      <input
-                        type="password"
-                        placeholder="8+ characters"
+                        type={showNewPassword ? "text" : "password"}
                         value={newPassword}
                         onChange={(event) => setNewPassword(event.target.value)}
                         autoComplete="new-password"
                         minLength={8}
                         required
                       />
-                    </label>
-                    <div className="modal-footer">
                       <button
                         type="button"
-                        className="button button-ghost"
-                        onClick={() => setShowAccountSettings(false)}
+                        className="password-toggle"
+                        onClick={() => setShowNewPassword((value) => !value)}
                       >
-                        Cancel
+                        {showNewPassword ? "Hide password" : "Show password"}
                       </button>
-                      <button className="button button-primary" disabled={busy}>
-                        Save password
-                      </button>
-                    </div>
-                  </form>
-                </div>
+                    </span>
+                  </label>
+                  <button className="button button-primary" disabled={busy || !newPassword}>
+                    {busy ? <Spinner /> : "Reset password"}
+                  </button>
+                </form>
               ) : (
                 <div className="settings-section">
                   <span className="eyebrow">Preferences</span>

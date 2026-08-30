@@ -7,7 +7,6 @@ const emptyDatabase = (): Database => ({
   agents: [],
   messages: [],
   runs: [],
-  users: [],
   workflows: [],
   artifacts: [],
   repairGroups: [],
@@ -21,10 +20,20 @@ type VersionedRecord = { version: number; [key: string]: unknown };
 function migrateDatabase(value: VersionedRecord, expectedVersion: number): VersionedRecord {
   if (expectedVersion !== 2) return value;
 
-  if (value.version === 2 && Array.isArray(value.agents)) {
+  if (value.version === 2) {
+    // Ensure all required fields exist in version 2
+    const { users: _legacyUsers, ...applicationData } = value;
     return {
-      ...value,
-      agents: (value.agents as Array<Record<string, unknown>>).map((agent) => ({ ...agent, visibility: agent.visibility === "internal" ? "internal" : "standalone" })),
+      ...applicationData,
+      agents: Array.isArray(value.agents) ? (value.agents as Array<Record<string, unknown>>).map((agent) => ({ ...agent, visibility: agent.visibility === "internal" ? "internal" : "standalone" })) : [],
+      messages: Array.isArray(value.messages) ? value.messages : [],
+      runs: Array.isArray(value.runs) ? value.runs : [],
+      workflows: Array.isArray(value.workflows) ? value.workflows : [],
+      artifacts: Array.isArray(value.artifacts) ? value.artifacts : [],
+      repairGroups: Array.isArray(value.repairGroups) ? value.repairGroups : [],
+      reviewDecisions: Array.isArray(value.reviewDecisions) ? value.reviewDecisions : [],
+      verificationResults: Array.isArray(value.verificationResults) ? value.verificationResults : [],
+      workflowEvents: Array.isArray(value.workflowEvents) ? value.workflowEvents : [],
     };
   }
   if (value.version !== 1) return value;
@@ -38,7 +47,6 @@ function migrateDatabase(value: VersionedRecord, expectedVersion: number): Versi
     ...value,
     version: 2,
     agents: (value.agents as Array<Record<string, unknown>>).map((agent) => ({ ...agent, visibility: agent.visibility === "internal" ? "internal" : "standalone" })),
-    users: Array.isArray(value.users) ? value.users : [],
     workflows: Array.isArray(value.workflows) ? value.workflows : [],
     artifacts: Array.isArray(value.artifacts) ? value.artifacts : [],
     repairGroups: Array.isArray(value.repairGroups) ? value.repairGroups : [],

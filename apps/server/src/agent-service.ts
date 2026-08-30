@@ -47,16 +47,16 @@ export class AgentService {
     });
   }
 
-  listAgents(): Agent[] {
+  listAgents(ownerId?: string): Agent[] {
     return this.store
       .snapshot()
-      .agents.filter((agent) => agent.visibility !== "internal")
+      .agents.filter((agent) => agent.visibility !== "internal" && (!ownerId || agent.ownerId === ownerId))
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
-  getAgent(id: string): Agent {
+  getAgent(id: string, ownerId?: string): Agent {
     const agent = this.store.snapshot().agents.find((item) => item.id === id);
-    if (!agent) {
+    if (!agent || (ownerId && agent.ownerId !== ownerId)) {
       throw new HttpError(404, "Agent not found");
     }
     return agent;
@@ -66,10 +66,11 @@ export class AgentService {
     return this.workspaces.describe(this.getAgent(agentId).workspacePath, maxChars);
   }
 
-  async createAgent(input: CreateAgentInput): Promise<Agent> {
+  async createAgent(input: CreateAgentInput, ownerId?: string): Promise<Agent> {
     const timestamp = now();
     const id = randomUUID();
     const agent: Agent = {
+      ...(ownerId ? { ownerId } : {}),
       id,
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
@@ -87,12 +88,12 @@ export class AgentService {
     return agent;
   }
 
-  async createWorkflowAgent(workflowId: string, input: Omit<CreateAgentInput, "visibility" | "workspacePath">): Promise<Agent> {
-    return this.createAgent({ ...input, visibility: "internal", workspacePath: path.join(this.config.workspaceRoot, "workflows", workflowId) });
+  async createWorkflowAgent(workflowId: string, input: Omit<CreateAgentInput, "visibility" | "workspacePath">, ownerId?: string): Promise<Agent> {
+    return this.createAgent({ ...input, visibility: "internal", workspacePath: path.join(this.config.workspaceRoot, "workflows", workflowId) }, ownerId);
   }
 
-  async updateAgent(id: string, input: UpdateAgentInput): Promise<Agent> {
-    const current = this.getAgent(id);
+  async updateAgent(id: string, input: UpdateAgentInput, ownerId?: string): Promise<Agent> {
+    const current = this.getAgent(id, ownerId);
     if (current.status === "busy") {
       throw new HttpError(409, "Stop the active run before editing this Agent");
     }
@@ -115,8 +116,8 @@ export class AgentService {
     return updated;
   }
 
-  async deleteAgent(id: string): Promise<{ archivedWorkspace: string }> {
-    const agent = this.getAgent(id);
+  async deleteAgent(id: string, ownerId?: string): Promise<{ archivedWorkspace: string }> {
+    const agent = this.getAgent(id, ownerId);
     await this.cancelExecution(id);
     const archivedWorkspace = await this.workspaces.archive(agent);
     await this.store.mutate((database) => {
@@ -127,18 +128,18 @@ export class AgentService {
     return { archivedWorkspace };
   }
 
-  async startAgent(id: string): Promise<Agent> {
-    return this.setStatus(id, "ready");
+  async startAgent(id: string, ownerId?: string): Promise<Agent> {
+    this.getAgent(id, ownerId); return this.setStatus(id, "ready");
   }
 
-  async stopAgent(id: string): Promise<Agent> {
-    this.getAgent(id);
+  async stopAgent(id: string, ownerId?: string): Promise<Agent> {
+    this.getAgent(id, ownerId);
     await this.cancelExecution(id);
     return this.setStatus(id, "stopped");
   }
 
-  getMessages(agentId: string): Message[] {
-    this.getAgent(agentId);
+  getMessages(agentId: string, ownerId?: string): Message[] {
+    this.getAgent(agentId, ownerId);
     return this.store
       .snapshot()
       .messages.filter((message) => message.agentId === agentId)
@@ -153,8 +154,8 @@ export class AgentService {
     return run;
   }
 
-  getRuns(agentId: string): AgentRun[] {
-    this.getAgent(agentId);
+  getRuns(agentId: string, ownerId?: string): AgentRun[] {
+    this.getAgent(agentId, ownerId);
     return this.store
       .snapshot()
       .runs.filter((run) => run.agentId === agentId)

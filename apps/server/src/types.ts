@@ -9,6 +9,7 @@ export type VerificationProfile = "thorough" | "balanced" | "token_saver";
 export type StageExecutionMode = "direct-ark" | "codex";
 
 export interface Agent {
+  ownerId?: string;
   id: string;
   name: string;
   description: string;
@@ -60,7 +61,6 @@ export interface Database {
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
-  users: User[];
   workflows: Workflow[];
   artifacts: Artifact[];
   repairGroups: RepairGroup[];
@@ -70,7 +70,7 @@ export interface Database {
 }
 
 export interface VerificationSettings { profile: VerificationProfile; maxAttempts: number; maxRepairGroups: number; }
-export interface Workflow { id: string; taskDescription: string; stages: Stage[]; status: WorkflowStatus; createdBy: string; verification: VerificationSettings; templateId?: string; iteration?: number; createdAt: string; updatedAt: string; }
+export interface Workflow { id: string; ownerId?: string; taskDescription: string; stages: Stage[]; status: WorkflowStatus; createdBy: string; verification: VerificationSettings; templateId?: string; iteration?: number; createdAt: string; updatedAt: string; }
 export interface Stage { id: string; workflowId: string; order: number; name: string; kind: StageKind; repairGroupId?: string; insertedAfterStageId?: string; personaId: string; agentId: string; skillIds: string[]; verifierIds: string[]; executionMode?: StageExecutionMode; userFlair?: string; revisionPrompt?: string; taskDescription?: string; iteration?: number; status: StageStatus; inputArtifactId?: string; outputArtifactId?: string; attempt: number; maxAttempts: number; lastError?: string; createdAt: string; updatedAt: string; }
 export interface Artifact { id: string; workflowId: string; stageId: string; version: number; parentArtifactId?: string; format: "text" | "markdown" | "json" | "code"; content: unknown; handoffContent?: string; schemaVersion: number; confidence?: number; flaggedForReview?: boolean; rationale?: string; metadata: Record<string, unknown>; createdBy: "agent" | "verifier" | "human"; createdAt: string; }
 export type HumanReviewAction = "approve" | "edit" | "reject" | "revise" | "skip";
@@ -84,11 +84,18 @@ export type AppFont = "system" | "serif" | "dyslexia" | "modern";
 export interface UserPreference { username: string; theme: Theme; font: AppFont; updatedAt: string; }
 export interface PreferencesDatabase { version: 1; preferences: UserPreference[]; }
 
-export interface User {
-  id: string;
+/** Credential records deliberately live outside the application-data database. */
+export interface Credential {
   username: string;
   passwordHash: string;
+  securityKeyHash: string;
   createdAt: string;
+  isContributor: boolean;
+}
+export interface CredentialsDatabase { version: 1; users: Credential[]; }
+
+export interface User {
+  username: string;
   isContributor: boolean;
 }
 

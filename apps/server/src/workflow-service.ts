@@ -45,9 +45,9 @@ export class WorkflowService {
     await this.store.mutate((db) => { for (const workflow of db.workflows) { if (workflow.status === "running") { workflow.status = "paused"; workflow.updatedAt = now(); db.workflowEvents.push({ id: randomUUID(), workflowId: workflow.id, event: "workflow_recovered", details: { reason: "server restart" }, timestamp: now() }); } for (const stage of workflow.stages) if (stage.status === "running") stage.status = "pending"; } });
   }
 
-  list(): Workflow[] { return this.store.snapshot().workflows.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }
+  list(ownerId?: string): Workflow[] { return this.store.snapshot().workflows.filter((w) => !ownerId || w.ownerId === ownerId).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }
   templates() { return templates.map(({ id, displayName, description, stages }) => ({ id, displayName, description, stages: stages.map(({ name, personaId }) => ({ name, personaId })) })); }
-  get(id: string): Workflow { const item = this.store.snapshot().workflows.find((value) => value.id === id); if (!item) throw new HttpError(404, "Workflow not found"); return item; }
+  get(id: string, ownerId?: string): Workflow { const item = this.store.snapshot().workflows.find((value) => value.id === id); if (!item || (ownerId && item.ownerId !== ownerId)) throw new HttpError(404, "Workflow not found"); return item; }
   events(id: string) { this.get(id); return this.store.snapshot().workflowEvents.filter((event) => event.workflowId === id).sort((a, b) => a.timestamp.localeCompare(b.timestamp)); }
   history(id: string) { this.get(id); const db = this.store.snapshot(); return { artifacts: db.artifacts.filter((item) => item.workflowId === id), decisions: db.reviewDecisions.filter((item) => item.workflowId === id), repairs: db.repairGroups.filter((item) => item.workflowId === id), verifications: db.verificationResults.filter((item) => item.workflowId === id), events: this.events(id) }; }
   conversation(id: string) {
@@ -59,12 +59,12 @@ export class WorkflowService {
     }).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
-  async create(input: { taskDescription: string; templateId?: string | undefined; createdBy?: string | undefined; verificationProfile?: Workflow["verification"]["profile"] | undefined }): Promise<Workflow> {
+  async create(input: { taskDescription: string; templateId?: string | undefined; createdBy?: string | undefined; ownerId?: string | undefined; verificationProfile?: Workflow["verification"]["profile"] | undefined }): Promise<Workflow> {
     const selected = template(input.templateId ?? "blog-post-pipeline");
     return this.createWithStages(input, selected, selected.stages);
   }
 
-  async createFromTask(input: { taskDescription: string; createdBy?: string | undefined; verificationProfile?: Workflow["verification"]["profile"] | undefined }): Promise<Workflow> {
+  async createFromTask(input: { taskDescription: string; createdBy?: string | undefined; ownerId?: string | undefined; verificationProfile?: Workflow["verification"]["profile"] | undefined }): Promise<Workflow> {
     if (!this.config || !isArkConfigured(this.config)) return this.create(input);
     try {
       const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 20_000);
@@ -79,25 +79,25 @@ export class WorkflowService {
     } catch { return this.create(input); }
   }
 
-  private async createWithStages(input: { taskDescription: string; templateId?: string | undefined; createdBy?: string | undefined; verificationProfile?: Workflow["verification"]["profile"] | undefined }, selected: WorkflowTemplate, definitions: TemplateStage[]): Promise<Workflow> {
+  private async createWithStages(input: { taskDescription: string; templateId?: string | undefined; createdBy?: string | undefined; ownerId?: string | undefined; verificationProfile?: Workflow["verification"]["profile"] | undefined }, selected: WorkflowTemplate, definitions: TemplateStage[]): Promise<Workflow> {
     const id = randomUUID(); const timestamp = now(); const stages: Stage[] = [];
     for (const [index, definition] of selected.stages.entries()) {
       validateSkills(definition.personaId, definition.skillIds ?? []);
       const persona = findPersona(definition.personaId);
-      const agent = await this.agents.createWorkflowAgent(id, { name: persona.displayName + " · " + (index + 1), description: persona.description, instructions: persona.basePrompt });
+      const agent = await this.agents.createWorkflowAgent(id, { name: persona.displayName + " · " + (index + 1), description: persona.description, instructions: persona.basePrompt }, input.ownerId);
       stages.push({ id: randomUUID(), workflowId: id, order: index, name: definition.name, kind: "planned", personaId: definition.personaId, agentId: agent.id, skillIds: definition.skillIds ?? [], verifierIds: definition.verifierIds ?? [], executionMode: ["developer", "tester"].includes(definition.personaId) ? "codex" : "direct-ark", status: "pending", attempt: 0, maxAttempts: definition.personaId === "tester" ? 1 : 2, createdAt: timestamp, updatedAt: timestamp });
     }
-    const workflow: Workflow = { id, taskDescription: input.taskDescription.trim(), stages, status: "draft", createdBy: input.createdBy ?? "local-user", verification: { profile: input.verificationProfile ?? (isCodingTemplate(selected, definitions) ? "token_saver" : "balanced"), maxAttempts: 2, maxRepairGroups: 5 }, templateId: selected.id, createdAt: timestamp, updatedAt: timestamp };
+    const workflow: Workflow = { id, ...(input.ownerId ? { ownerId: input.ownerId } : {}), taskDescription: input.taskDescription.trim(), stages, status: "draft", createdBy: input.createdBy ?? "local-user", verification: { profile: input.verificationProfile ?? (isCodingTemplate(selected, definitions) ? "token_saver" : "balanced"), maxAttempts: 2, maxRepairGroups: 5 }, templateId: selected.id, createdAt: timestamp, updatedAt: timestamp };
     await this.store.mutate((database) => { database.workflows.push(workflow); database.messages.push({ id: randomUUID(), agentId: stages[0]!.agentId, runId: randomUUID(), role: "user", content: workflow.taskDescription, createdAt: timestamp, workflowId: id, stageId: stages[0]!.id, workflowDisplay: true }); });
     return workflow;
   }
 
-  async start(id: string): Promise<Workflow> {
-    const workflow = this.get(id);
+  async start(id: string, ownerId?: string): Promise<Workflow> {
+    const workflow = this.get(id, ownerId);
     if (!["draft", "paused"].includes(workflow.status)) throw new HttpError(409, "Workflow cannot be started in its current state");
     await this.store.mutate((database) => { const item = database.workflows.find((value) => value.id === id)!; item.status = "running"; item.updatedAt = now(); });
     if (!this.active.has(id)) { const execution = this.execute(id); this.active.set(id, execution); void execution.finally(() => this.active.delete(id)); }
-    return this.get(id);
+    return this.get(id, ownerId);
   }
   async pause(id: string): Promise<Workflow> { await this.store.mutate((db) => { const item = db.workflows.find((w) => w.id === id); if (!item) throw new HttpError(404, "Workflow not found"); if (item.status !== "running" && item.status !== "awaiting_approval") throw new HttpError(409, "Workflow cannot be paused"); item.status = "paused"; item.updatedAt = now(); }); return this.get(id); }
   async cancel(id: string): Promise<Workflow> { await this.store.mutate((db) => { const item = db.workflows.find((w) => w.id === id); if (!item) throw new HttpError(404, "Workflow not found"); if (item.status === "completed" || item.status === "cancelled") throw new HttpError(409, "Workflow is already terminal"); item.status = "cancelled"; item.updatedAt = now(); }); return this.get(id); }
@@ -111,7 +111,7 @@ export class WorkflowService {
     for (const [index, definition] of selected.stages.entries()) {
       const persona = findPersona(definition.personaId);
       const previous = workflow.stages.slice().reverse().find((stage) => stage.personaId === definition.personaId);
-      const agent = previous ? this.agents.getAgent(previous.agentId) : await this.agents.createWorkflowAgent(workflowId, { name: persona.displayName + " · iteration " + iteration, description: persona.description, instructions: persona.basePrompt });
+      const agent = previous ? this.agents.getAgent(previous.agentId) : await this.agents.createWorkflowAgent(workflowId, { name: persona.displayName + " · iteration " + iteration, description: persona.description, instructions: persona.basePrompt }, workflow.ownerId);
       const timestamp = now();
       stages.push({ id: randomUUID(), workflowId, order: offset + index, name: definition.name, kind: "planned", personaId: definition.personaId, agentId: agent.id, skillIds: definition.skillIds ?? [], verifierIds: definition.verifierIds ?? [], executionMode: ["developer", "tester"].includes(definition.personaId) ? "codex" : "direct-ark", taskDescription: taskDescription.trim(), iteration, status: "pending", attempt: 0, maxAttempts: definition.personaId === "tester" ? 1 : 2, createdAt: timestamp, updatedAt: timestamp });
     }
@@ -247,7 +247,7 @@ export class WorkflowService {
     if (db.repairGroups.filter((item) => item.workflowId === workflowId).length >= workflow.verification.maxRepairGroups) throw new HttpError(409, "Repair limit reached");
     const groupId = randomUUID(); const created: Stage[] = [];
     for (const [index, personaId] of ["drafter", "editor", "reviewer"].entries()) {
-      const persona = findPersona(personaId); const agent = await this.agents.createAgent({ name: "Repair " + persona.displayName, description: persona.description, instructions: persona.basePrompt }); const timestamp = now();
+      const persona = findPersona(personaId); const agent = await this.agents.createAgent({ name: "Repair " + persona.displayName, description: persona.description, instructions: persona.basePrompt }, workflow.ownerId); const timestamp = now();
       created.push({ id: randomUUID(), workflowId, order: source.order + index + 1, name: "Repair " + persona.displayName, kind: "repair", repairGroupId: groupId, insertedAfterStageId: source.id, personaId, agentId: agent.id, skillIds: [], verifierIds: [], status: "pending", attempt: 0, maxAttempts: workflow.verification.maxAttempts, createdAt: timestamp, updatedAt: timestamp });
     }
     await this.store.mutate((database) => { const item = database.workflows.find((value) => value.id === workflowId)!; const position = item.stages.findIndex((stage) => stage.id === source.id); item.stages.splice(position + 1, 0, ...created); item.stages = item.stages.map((stage, index) => ({ ...stage, order: index })); database.repairGroups.push({ id: groupId, workflowId, sourceStageId: source.id, sourceArtifactId, trigger, ...(trigger === "human_rejection" ? { feedback: instruction } : {}), ...(trigger === "human_prompt" ? { prompt: instruction } : {}), stageIds: created.map((stage) => stage.id), status: "pending", createdAt: now() }); });

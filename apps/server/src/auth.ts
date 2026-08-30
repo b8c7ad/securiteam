@@ -1,11 +1,10 @@
-import { randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
+import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
-import type { AppFont, PreferencesDatabase, Theme, User, UserPreference } from "./types.js";
+import type { AppFont, Credential, CredentialsDatabase, PreferencesDatabase, Theme, User, UserPreference } from "./types.js";
 import { HttpError } from "./errors.js";
 import { JsonStore } from "./store.js";
 
 const scrypt = promisify(scryptCallback);
-const sessions = new Map<string, { user: User; expires: number }>();
 const normalize = (v: string) => v.trim().toLowerCase();
 
 export async function hashPassword(password: string): Promise<string> {
@@ -23,52 +22,77 @@ export async function verifyPassword(password: string, encoded: string): Promise
 }
 
 export class AuthService {
-  constructor(private readonly store: JsonStore, private readonly contributorKeys: string[], private readonly preferences?: JsonStore<PreferencesDatabase>) {}
+  constructor(private readonly credentials: JsonStore<CredentialsDatabase>, private readonly contributorKeys: string[], private readonly preferences?: JsonStore<PreferencesDatabase>) {}
   async initialize() {
     const keys = this.contributorKeys.filter(Boolean);
     if (!keys.length) return;
-    await this.store.mutate(async db => {
+    await this.credentials.mutate(async db => {
       for (let i = 0; i < keys.length; i++) {
         const [username, password] = (keys[i] ?? "").split(":", 2);
         if (!username || !password || db.users.some(u => u.username === normalize(username))) continue;
-        db.users.push({ id: randomUUID(), username: normalize(username), passwordHash: await hashPassword(password), createdAt: new Date().toISOString(), isContributor: true });
+        db.users.push({ username: normalize(username), passwordHash: await hashPassword(password), securityKeyHash: await hashPassword(password), createdAt: new Date().toISOString(), isContributor: true });
       }
     });
   }
-  async login(username: string, password: string) {
-    const user = this.store.snapshot().users.find(u => u.username === normalize(username));
-    if (!user || !(await verifyPassword(password, user.passwordHash))) throw new HttpError(401, "Invalid username or password");
-    const token = randomBytes(32).toString("base64url");
-    sessions.set(token, { user, expires: Date.now() + 1000 * 60 * 60 * 12 });
-    return { token, user: { id: user.id, username: user.username, isContributor: user.isContributor } };
+  /** One-time upgrade path for password hashes formerly stored with app data. */
+  async importLegacy(users: unknown): Promise<void> {
+    if (!Array.isArray(users)) return;
+    await this.credentials.mutate((db) => {
+      for (const value of users) {
+        const user = value as Partial<Credential>;
+        if (!user.username || !user.passwordHash || !user.securityKeyHash) continue;
+        const username = normalize(user.username);
+        if (!db.users.some((item) => item.username === username)) {
+          db.users.push({ username, passwordHash: user.passwordHash, securityKeyHash: user.securityKeyHash, createdAt: user.createdAt ?? new Date().toISOString(), isContributor: user.isContributor === true });
+        }
+      }
+    });
   }
-  async register(username: string, password: string) {
+  hasUsers(): boolean { return this.credentials.snapshot().users.length > 0; }
+  private publicUser(user: Credential): User { return { username: user.username, isContributor: user.isContributor }; }
+  async login(username: string, password: string): Promise<User> {
+    return this.authenticate(username, password);
+  }
+  async authenticate(username: string, password: string): Promise<User> {
+    const user = this.credentials.snapshot().users.find(u => u.username === normalize(username));
+    if (!user || !(await verifyPassword(password, user.passwordHash))) throw new HttpError(401, "Invalid username or password");
+    return this.publicUser(user);
+  }
+  async register(username: string, password: string, securityKey: string): Promise<User> {
     const normalized = normalize(username);
-    if (this.store.snapshot().users.some(u => u.username === normalized)) {
+    if (this.credentials.snapshot().users.some(u => u.username === normalized)) {
       throw new HttpError(409, "That username is already in use");
     }
-    const user = await this.store.mutate(async db => {
+    const user = await this.credentials.mutate(async db => {
       if (db.users.some(u => u.username === normalized)) throw new HttpError(409, "That username is already in use");
-      const created = { id: randomUUID(), username: normalized, passwordHash: await hashPassword(password), createdAt: new Date().toISOString(), isContributor: false };
+      const created = { username: normalized, passwordHash: await hashPassword(password), securityKeyHash: await hashPassword(securityKey), createdAt: new Date().toISOString(), isContributor: false };
       db.users.push(created);
       return created;
     });
-    const token = randomBytes(32).toString("base64url");
-    sessions.set(token, { user, expires: Date.now() + 1000 * 60 * 60 * 12 });
-    return { token, user: { id: user.id, username: user.username, isContributor: user.isContributor } };
+    return this.publicUser(user);
   }
-  get(token: string | undefined): User {
-    const session = token ? sessions.get(token) : undefined;
-    if (!session || session.expires < Date.now()) throw new HttpError(401, "Authentication required");
-    return session.user;
-  }
-  async changePassword(userId: string, current: string, next: string) {
-    await this.store.mutate(async db => {
-      const user = db.users.find(u => u.id === userId);
-      if (!user || !(await verifyPassword(current, user.passwordHash))) {
-        throw new HttpError(401, "Current password is incorrect");
+
+  async resetPassword(username: string, securityKey: string, password: string): Promise<void> {
+    const normalized = normalize(username);
+    const user = this.credentials.snapshot().users.find((item) => item.username === normalized);
+    if (!user || !(await verifyPassword(securityKey, user.securityKeyHash))) {
+      throw new HttpError(401, "Invalid username or security key");
+    }
+    await this.credentials.mutate(async (db) => {
+      const credential = db.users.find((item) => item.username === normalized);
+      if (!credential || !(await verifyPassword(securityKey, credential.securityKeyHash))) {
+        throw new HttpError(401, "Invalid username or security key");
       }
-      user.passwordHash = await hashPassword(next);
+      credential.passwordHash = await hashPassword(password);
+    });
+  }
+
+  async changePassword(username: string, password: string): Promise<void> {
+    const normalized = normalize(username);
+    await this.credentials.mutate(async (db) => {
+      const credential = db.users.find((item) => item.username === normalized);
+      if (!credential) throw new HttpError(404, "Account not found");
+      credential.passwordHash = await hashPassword(password);
     });
   }
 

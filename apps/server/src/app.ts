@@ -1,8 +1,6 @@
 import cors from "@fastify/cors";
-import fastifyCookie from "@fastify/cookie";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
-import { timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import type { AppConfig } from "./config.js";
@@ -26,8 +24,9 @@ const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
 });
 const loginBody = z.object({ username: z.string().trim().min(1).max(64), password: z.string().min(8).max(200), honeypot: z.string().max(0).optional() });
-const registerBody = loginBody.omit({ honeypot: true });
-const passwordBody = z.object({ currentPassword: z.string().min(8), newPassword: z.string().min(8).max(200) });
+const registerBody = z.object({ username: z.string().trim().min(1).max(64), password: z.string().min(8).max(200), securityKey: z.string().trim().min(3).max(200) });
+const resetPasswordBody = z.object({ username: z.string().trim().min(1).max(64), password: z.string().min(8).max(200), securityKey: z.string().trim().min(3).max(200) });
+const changePasswordBody = z.object({ password: z.string().min(8).max(200) });
 const preferencesBody = z.object({ theme: z.enum(["system", "light", "dark", "sepia", "forest", "ocean"]), font: z.enum(["system", "serif", "dyslexia", "modern"]) });
 
 export async function createApp(
@@ -39,7 +38,7 @@ export async function createApp(
   const app = Fastify({
     logger: {
       level: config.logLevel,
-      redact: ["req.headers.authorization", "req.headers.cookie"],
+      redact: ["req.headers.authorization", "req.headers.cookie", "req.headers.x-launchpad-password", "req.headers.x-launchpad-security-key"],
     },
     bodyLimit: 1_048_576,
   });
@@ -50,58 +49,50 @@ export async function createApp(
         ? ["http://localhost:5173", "http://127.0.0.1:5173"]
         : false,
   });
-  await app.register(fastifyCookie);
-
   app.addHook("onRequest", async (request, reply) => {
     if (
       !request.url.startsWith("/api/") ||
       request.url === "/api/health" ||
-      request.url === "/api/auth" || request.url === "/api/auth/login" || request.url === "/api/auth/register"
+      request.url === "/api/auth" || request.url === "/api/auth/login" || request.url === "/api/auth/register" || request.url === "/api/auth/reset-password" || request.url === "/api/auth/logout"
     ) {
       return;
     }
-    const session = request.cookies?.launchpad_session;
-    if (session) { try { (request as any).user = auth.get(session); return; } catch {} }
-    // Account sessions are independent of the optional shared operator token.
-    // With no APP_AUTH_TOKEN, the application remains open on loopback, but a
-    // valid account session must still be attached for account-only endpoints.
-    if (!config.authToken) return;
-    const header = request.headers.authorization ?? "";
-    const candidate = header.startsWith("Bearer ") ? header.slice(7) : "";
-    const expectedBuffer = Buffer.from(config.authToken);
-    const candidateBuffer = Buffer.from(candidate);
-    const valid =
-      candidateBuffer.length === expectedBuffer.length &&
-      timingSafeEqual(candidateBuffer, expectedBuffer);
-    if (!valid) {
-      return reply.code(401).send({ error: "Authentication required" });
+    if (!auth) return;
+    try {
+      (request as any).user = await auth.authenticate(
+        String(request.headers["x-launchpad-username"] ?? ""),
+        String(request.headers["x-launchpad-password"] ?? ""),
+      );
+    } catch {
+      return reply.code(401).send({ error: "Sign in with username and password" });
     }
   });
+
+  const owner = (request: any): string | undefined => request.user?.username;
 
   app.post("/api/auth/login", async (request, reply) => {
     const body = loginBody.parse(request.body);
     if (body.honeypot) throw new HttpError(401, "Invalid username or password");
-    const result = await auth.login(body.username, body.password);
-    reply.setCookie("launchpad_session", result.token, { httpOnly: true, sameSite: "strict", secure: config.nodeEnv === "production", path: "/", maxAge: 60 * 60 * 12 });
-    return { user: result.user };
+    return { user: await auth.login(body.username, body.password) };
   });
   app.post("/api/auth/register", async (request, reply) => {
     const body = registerBody.parse(request.body);
-    const result = await auth.register(body.username, body.password);
-    reply.setCookie("launchpad_session", result.token, { httpOnly: true, sameSite: "strict", secure: config.nodeEnv === "production", path: "/", maxAge: 60 * 60 * 12 });
-    return reply.code(201).send({ user: result.user });
+    return reply.code(201).send({ user: await auth.register(body.username, body.password, body.securityKey) });
   });
-  app.post("/api/auth/logout", async (_request, reply) => { reply.clearCookie("launchpad_session", { path: "/" }); return { ok: true }; });
-  app.get("/api/auth/me", async request => ({ user: (request as any).user }));
-  app.post("/api/auth/password", async request => {
-    // The shared APP_AUTH_TOKEN fallback authenticates operators but does not
-    // identify a local account. Password changes must use an account session.
-    const user = (request as any).user;
-    if (!user) throw new HttpError(401, "Account session required");
-    const { currentPassword, newPassword } = passwordBody.parse(request.body);
-    await auth.changePassword(user.id, currentPassword, newPassword);
+  app.post("/api/auth/reset-password", async (request) => {
+    const body = resetPasswordBody.parse(request.body);
+    await auth.resetPassword(body.username, body.securityKey, body.password);
     return { ok: true };
   });
+  app.post("/api/auth/change-password", async (request) => {
+    const user = (request as any).user;
+    if (!user) throw new HttpError(401, "Account session required");
+    const body = changePasswordBody.parse(request.body);
+    await auth.changePassword(user.username, body.password);
+    return { ok: true };
+  });
+  app.post("/api/auth/logout", async () => ({ ok: true }));
+  app.get("/api/auth/me", async request => ({ user: (request as any).user }));
   app.get("/api/auth/preferences", async request => {
     const user = (request as any).user;
     if (!user) throw new HttpError(401, "Account session required");
@@ -120,17 +111,6 @@ export async function createApp(
   }));
 
   app.get("/api/auth", async request => {
-    // Keep the browser session across a reload by probing the cookie rather
-    // than unconditionally sending an already signed-in user to the login UI.
-    const session = request.cookies?.launchpad_session;
-    if (session) {
-      try {
-        auth.get(session);
-        return { required: false };
-      } catch {
-        // Expired or invalid cookies should be treated as signed out.
-      }
-    }
     return { required: true };
   });
 
@@ -145,77 +125,80 @@ export async function createApp(
   const continueBody = z.object({ taskDescription: z.string().trim().min(1).max(50_000), templateId: z.string().optional() });
   if (workflows) {
     app.get("/api/workflows/templates", async () => ({ templates: workflows.templates() }));
-    app.get("/api/workflows", async () => ({ workflows: workflows.list() }));
-    app.post("/api/workflows", async (request, reply) => { const body = workflowBody.parse(request.body); const workflow = body.templateId ? await workflows.create(body) : await workflows.createFromTask(body); return reply.code(201).send({ workflow }); });
-    app.get("/api/workflows/:id", async (request) => ({ workflow: workflows.get(workflowIdParams.parse(request.params).id) }));
-    app.get("/api/workflows/:id/events", async (request) => ({ events: workflows.events(workflowIdParams.parse(request.params).id) }));
-    app.get("/api/workflows/:id/conversation", async (request) => ({ messages: workflows.conversation(workflowIdParams.parse(request.params).id) }));
-    app.post("/api/workflows/:id/start", async (request) => ({ workflow: await workflows.start(workflowIdParams.parse(request.params).id) }));
-    app.post("/api/workflows/:id/pause", async (request) => ({ workflow: await workflows.pause(workflowIdParams.parse(request.params).id) }));
-    app.post("/api/workflows/:id/cancel", async (request) => ({ workflow: await workflows.cancel(workflowIdParams.parse(request.params).id) }));
-    app.post("/api/workflows/:id/continue", async (request) => ({ workflow: await workflows.continue(workflowIdParams.parse(request.params).id, continueBody.parse(request.body).taskDescription, continueBody.parse(request.body).templateId) }));
-    app.post("/api/workflows/:id/stages/:stageId/retry", async (request) => { const p = stageParams.parse(request.params); return { workflow: await workflows.retry(p.id, p.stageId) }; });
-    app.get("/api/workflows/:id/history", async (request) => ({ history: workflows.history(workflowIdParams.parse(request.params).id) }));
-    app.post("/api/workflows/:id/stages/:stageId/approve", async (request) => { const p = stageParams.parse(request.params); return { workflow: await workflows.approve(p.id, p.stageId) }; });
-    app.post("/api/workflows/:id/stages/:stageId/reject", async (request) => { const p = stageParams.parse(request.params); return { workflow: await workflows.reject(p.id, p.stageId, feedbackBody.parse(request.body).feedback) }; });
-    app.post("/api/workflows/:id/stages/:stageId/revise", async (request) => { const p = stageParams.parse(request.params); return { workflow: await workflows.revise(p.id, p.stageId, revisionBody.parse(request.body).prompt) }; });
-    app.post("/api/workflows/:id/stages/:stageId/edit", async (request) => { const p = stageParams.parse(request.params); return { workflow: await workflows.edit(p.id, p.stageId, editBody.parse(request.body).content) }; });
+    app.get("/api/workflows", async (request) => ({ workflows: workflows.list(owner(request)) }));
+    app.post("/api/workflows", async (request, reply) => { const body = workflowBody.parse(request.body); const input = { ...body, ...(owner(request) ? { ownerId: owner(request) } : {}), ...(owner(request) || body.createdBy ? { createdBy: owner(request) ?? body.createdBy } : {}) }; const workflow = body.templateId ? await workflows.create(input) : await workflows.createFromTask(input); return reply.code(201).send({ workflow }); });
+    app.get("/api/workflows/:id", async (request) => { const id = workflowIdParams.parse(request.params).id; return { workflow: workflows.get(id, owner(request)) }; });
+    app.get("/api/workflows/:id/events", async (request) => { const id = workflowIdParams.parse(request.params).id; workflows.get(id, owner(request)); return { events: workflows.events(id) }; });
+    app.get("/api/workflows/:id/conversation", async (request) => { const id = workflowIdParams.parse(request.params).id; workflows.get(id, owner(request)); return { messages: workflows.conversation(id) }; });
+    app.post("/api/workflows/:id/start", async (request) => { const id = workflowIdParams.parse(request.params).id; return { workflow: await workflows.start(id, owner(request)) }; });
+    app.post("/api/workflows/:id/pause", async (request) => { const id = workflowIdParams.parse(request.params).id; workflows.get(id, owner(request)); return { workflow: await workflows.pause(id) }; });
+    app.post("/api/workflows/:id/cancel", async (request) => { const id = workflowIdParams.parse(request.params).id; workflows.get(id, owner(request)); return { workflow: await workflows.cancel(id) }; });
+    app.post("/api/workflows/:id/continue", async (request) => { const id = workflowIdParams.parse(request.params).id; workflows.get(id, owner(request)); const body = continueBody.parse(request.body); return { workflow: await workflows.continue(id, body.taskDescription, body.templateId) }; });
+    app.post("/api/workflows/:id/stages/:stageId/retry", async (request) => { const p = stageParams.parse(request.params); workflows.get(p.id, owner(request)); return { workflow: await workflows.retry(p.id, p.stageId) }; });
+    app.get("/api/workflows/:id/history", async (request) => { const id = workflowIdParams.parse(request.params).id; workflows.get(id, owner(request)); return { history: workflows.history(id) }; });
+    app.post("/api/workflows/:id/stages/:stageId/approve", async (request) => { const p = stageParams.parse(request.params); workflows.get(p.id, owner(request)); return { workflow: await workflows.approve(p.id, p.stageId) }; });
+    app.post("/api/workflows/:id/stages/:stageId/reject", async (request) => { const p = stageParams.parse(request.params); workflows.get(p.id, owner(request)); return { workflow: await workflows.reject(p.id, p.stageId, feedbackBody.parse(request.body).feedback) }; });
+    app.post("/api/workflows/:id/stages/:stageId/revise", async (request) => { const p = stageParams.parse(request.params); workflows.get(p.id, owner(request)); return { workflow: await workflows.revise(p.id, p.stageId, revisionBody.parse(request.body).prompt) }; });
+    app.post("/api/workflows/:id/stages/:stageId/edit", async (request) => { const p = stageParams.parse(request.params); workflows.get(p.id, owner(request)); return { workflow: await workflows.edit(p.id, p.stageId, editBody.parse(request.body).content) }; });
   }
 
-  app.get("/api/agents", async () => ({ agents: service.listAgents() }));
+  app.get("/api/agents", async (request) => ({ agents: service.listAgents(owner(request)) }));
 
   app.post("/api/agents", async (request, reply) => {
     const body = createAgentBody.parse(request.body);
-    const agent = await service.createAgent(body);
+    const agent = await service.createAgent(body, owner(request));
     return reply.code(201).send({ agent });
   });
 
   app.get("/api/agents/:id", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return { agent: service.getAgent(id) };
+    return { agent: service.getAgent(id, owner(request)) };
   });
 
   app.patch("/api/agents/:id", async (request) => {
     const { id } = agentIdParams.parse(request.params);
     const body = updateAgentBody.parse(request.body);
-    return { agent: await service.updateAgent(id, body) };
+    return { agent: await service.updateAgent(id, body, owner(request)) };
   });
 
   app.delete("/api/agents/:id", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return service.deleteAgent(id);
+    return service.deleteAgent(id, owner(request));
   });
 
   app.post("/api/agents/:id/start", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return { agent: await service.startAgent(id) };
+    return { agent: await service.startAgent(id, owner(request)) };
   });
 
   app.post("/api/agents/:id/stop", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return { agent: await service.stopAgent(id) };
+    return { agent: await service.stopAgent(id, owner(request)) };
   });
 
   app.get("/api/agents/:id/messages", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return { messages: service.getMessages(id) };
+    return { messages: service.getMessages(id, owner(request)) };
   });
 
   app.get("/api/agents/:id/runs", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    return { runs: service.getRuns(id) };
+    return { runs: service.getRuns(id, owner(request)) };
   });
 
   app.post("/api/agents/:id/messages", async (request, reply) => {
     const { id } = agentIdParams.parse(request.params);
     const body = messageBody.parse(request.body);
+    service.getAgent(id, owner(request));
     const result = await service.sendMessage(id, body.content);
     return reply.code(202).send(result);
   });
 
   app.get("/api/runs/:id", async (request) => {
     const { id } = runIdParams.parse(request.params);
-    return { run: service.getRun(id) };
+    const run = service.getRun(id);
+    service.getAgent(run.agentId, owner(request));
+    return { run };
   });
 
   if (config.nodeEnv === "production") {

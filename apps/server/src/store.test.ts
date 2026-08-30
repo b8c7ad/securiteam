@@ -25,7 +25,7 @@ describe("JsonStore", () => {
     const store = new JsonStore<Database>(filePath);
     await store.initialize();
 
-    expect(store.snapshot()).toMatchObject({ version: 2, users: [], workflows: [], workflowEvents: [] });
+    expect(store.snapshot()).toMatchObject({ version: 2, workflows: [], workflowEvents: [] });
     expect(JSON.parse(await readFile(filePath, "utf8")).version).toBe(2);
   });
 

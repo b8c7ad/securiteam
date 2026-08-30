@@ -10,19 +10,28 @@ export class ApiError extends Error {
 }
 
 let authToken = "";
+let credentials: { username: string; password: string } | null = null;
 
 export function setAuthToken(token: string): void {
   authToken = token.trim();
+}
+export function setCredentials(next: { username: string; password: string } | null): void {
+  credentials = next;
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const headers = {
     ...(options?.body ? { "Content-Type": "application/json" } : {}),
     ...(authToken ? { Authorization: "Bearer " + authToken } : {}),
+    ...(credentials ? {
+      "X-Launchpad-Username": credentials.username,
+      "X-Launchpad-Password": credentials.password,
+    } : {}),
     ...options?.headers,
   };
   const response = await fetch(url, {
     ...options,
+    credentials: "same-origin",
     headers,
   });
   const data = (await response.json().catch(() => ({}))) as T & { error?: string };
@@ -33,11 +42,12 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  login: (username: string, password: string, honeypot = "") => request<{ user: { id: string; username: string; isContributor: boolean } }>("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password, honeypot }) }),
-  register: (username: string, password: string) => request<{ user: { id: string; username: string; isContributor: boolean } }>("/api/auth/register", { method: "POST", body: JSON.stringify({ username, password }) }),
-  me: () => request<{ user: { id: string; username: string; isContributor: boolean } }>("/api/auth/me"),
+  login: (username: string, password: string, honeypot = "") => request<{ user: { username: string; isContributor: boolean } }>("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password, honeypot }) }),
+  register: (username: string, password: string, securityKey: string) => request<{ user: { username: string; isContributor: boolean } }>("/api/auth/register", { method: "POST", body: JSON.stringify({ username, password, securityKey }) }),
+  resetPassword: (username: string, securityKey: string, password: string) => request<{ ok: true }>("/api/auth/reset-password", { method: "POST", body: JSON.stringify({ username, securityKey, password }) }),
+  changePassword: (password: string) => request<{ ok: true }>("/api/auth/change-password", { method: "POST", body: JSON.stringify({ password }) }),
+  me: () => request<{ user: { username: string; isContributor: boolean } }>("/api/auth/me"),
   logout: () => request<{ ok: true }>("/api/auth/logout", { method: "POST" }),
-  changePassword: (currentPassword: string, newPassword: string) => request<{ ok: true }>("/api/auth/password", { method: "POST", body: JSON.stringify({ currentPassword, newPassword }) }),
   preferences: () => request<{ preferences: { theme: string; font: string } }>("/api/auth/preferences"),
   savePreferences: (theme: string, font: string) => request<{ preferences: { theme: string; font: string } }>("/api/auth/preferences", { method: "PATCH", body: JSON.stringify({ theme, font }) }),
   auth: () => request<{ required: boolean }>("/api/auth"),
