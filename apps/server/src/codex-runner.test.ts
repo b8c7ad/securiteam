@@ -37,6 +37,13 @@ describe("Codex runner protocol", () => {
     expect(args.slice(-3)).toEqual(["resume", "thread-123", "add tests"]);
   });
 
+  it("passes per-run sandbox and reasoning settings", () => {
+    const request = { agentId: "analyzer", workspacePath: "/tmp/workspace", prompt: "inspect", threadId: null, sandboxMode: "read-only" as const, reasoningEffort: "low" as const };
+    const args = buildCodexArgs(request, request.sandboxMode);
+    expect(args).toContain("read-only");
+    expect(args).toContain('model_reasoning_effort="low"');
+  });
+
   it("extracts the session, final message and usage", () => {
     const parsed = {
       messages: [] as string[],

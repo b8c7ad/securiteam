@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentService } from "./agent-service.js";
 import { loadConfig } from "./config.js";
 import { JsonStore } from "./store.js";
@@ -14,6 +14,41 @@ const roots: string[] = [];
 afterEach(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
 describe("WorkflowService", () => {
+  it("uses distinct greenfield and existing-code pipelines with bounded Tester attempts", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "workflow-template-test-")); roots.push(root);
+    const config = loadConfig({ NODE_ENV: "test", APP_DATA_DIR: path.join(root, "data"), AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"), CODEX_HOME: path.join(root, "codex"), ARK_API_KEY: "key", ARK_MODEL: "model" });
+    const store = new JsonStore(path.join(root, "data", "db.json")); const agents = new AgentService(config, store, new WorkspaceManager(config.workspaceRoot), new FakeRunner()); await agents.initialize(); const workflows = new WorkflowService(store, agents);
+    const greenfield = await workflows.create({ taskDescription: "build an app", templateId: "software-build-pipeline" });
+    const existing = await workflows.create({ taskDescription: "fix an app", templateId: "bug-fix-pipeline" });
+    expect(greenfield.stages.map((stage) => stage.personaId)).toEqual(["brainstormer", "developer", "tester", "reviewer"]);
+    expect(existing.stages.map((stage) => stage.personaId)).toEqual(["analyzer", "developer", "tester", "reviewer"]);
+    expect(greenfield.stages.find((stage) => stage.personaId === "tester")?.maxAttempts).toBe(1);
+    expect(existing.stages.find((stage) => stage.personaId === "tester")?.maxAttempts).toBe(1);
+    expect(greenfield.verification.profile).toBe("token_saver");
+  });
+
+  it("stores full output but passes a smaller handoff to the next stage", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "workflow-handoff-test-")); roots.push(root);
+    const config = loadConfig({ NODE_ENV: "test", APP_DATA_DIR: path.join(root, "data"), AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"), CODEX_HOME: path.join(root, "codex"), ARK_API_KEY: "key", ARK_MODEL: "model" });
+    const output = "A".repeat(20_000);
+    const runner: AgentRunner = { run: async () => ({ output, threadId: "thread", usage: null }), cancel: async () => false, isAvailable: async () => true };
+    const store = new JsonStore(path.join(root, "data", "db.json")); const agents = new AgentService(config, store, new WorkspaceManager(config.workspaceRoot), runner); await agents.initialize(); const workflows = new WorkflowService(store, agents, config);
+    const workflow = await workflows.create({ taskDescription: "draft", templateId: "blog-post-pipeline" }); await workflows.start(workflow.id);
+    await expect.poll(() => store.snapshot().artifacts.length).toBe(1);
+    const artifact = store.snapshot().artifacts[0]!;
+    expect(String(artifact.content)).toHaveLength(20_000);
+    expect(artifact.handoffContent?.length).toBeLessThan(20_000);
+  });
+
+  it("skips external Ark verification in token saver workflows", async () => {
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    const root = await mkdtemp(path.join(tmpdir(), "workflow-token-saver-test-")); roots.push(root);
+    const config = loadConfig({ NODE_ENV: "test", APP_DATA_DIR: path.join(root, "data"), AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"), CODEX_HOME: path.join(root, "codex"), ARK_API_KEY: "key", ARK_MODEL: "model" });
+    const store = new JsonStore(path.join(root, "data", "db.json")); const agents = new AgentService(config, store, new WorkspaceManager(config.workspaceRoot), new FakeRunner()); await agents.initialize(); const workflows = new WorkflowService(store, agents, config);
+    const workflow = await workflows.create({ taskDescription: "build an app", templateId: "software-build-pipeline" }); await workflows.start(workflow.id);
+    await expect.poll(() => workflows.get(workflow.id).stages[0]?.status).toBe("awaiting_approval");
+    expect(fetchMock).not.toHaveBeenCalled(); vi.unstubAllGlobals();
+  });
   it("runs stages, verifies outputs, and resumes after approval", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "workflow-test-")); roots.push(root);
     const config = loadConfig({ NODE_ENV: "test", APP_DATA_DIR: path.join(root, "data"), AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"), CODEX_HOME: path.join(root, "codex"), ARK_API_KEY: "key", ARK_MODEL: "model" });

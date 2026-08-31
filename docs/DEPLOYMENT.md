@@ -100,6 +100,12 @@ ARK_MODEL=ep-your-endpoint-id
 APP_AUTH_TOKEN=the-random-token-generated-above
 ```
 
+`APP_AUTH_TOKEN` is retained as a required deployment secret for compatibility
+with the infrastructure configuration, but the current application protects
+API routes with user accounts. It is not the browser sign-in password and it
+does not replace account authentication. Keep it private and use a separate
+username, password, and security key when creating the first account.
+
 Deploy:
 
 ```bash
@@ -111,11 +117,26 @@ Verify:
 
 ```bash
 curl http://127.0.0.1/api/health
-export APP_AUTH_TOKEN=your-shared-demo-token
-curl -H "Authorization: Bearer $APP_AUTH_TOKEN" \
-  http://127.0.0.1/api/system
 docker compose --env-file .env.production ps
 ```
+
+The health endpoint is public. Create an account through the web UI, or use
+the API (replace the example values and keep the security key private):
+
+```bash
+curl -i -X POST http://127.0.0.1/api/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"operator","password":"use-a-strong-password","securityKey":"use-a-separate-recovery-key"}'
+
+curl -i http://127.0.0.1/api/system \
+  -H 'x-launchpad-username: operator' \
+  -H 'x-launchpad-password: use-a-strong-password'
+```
+
+If registration reports that the account already exists, sign in through the
+web UI or use the existing account credentials. The application does not use
+an `Authorization: Bearer` value from `APP_AUTH_TOKEN` to authenticate these
+requests.
 
 Deploy updates with `git pull --ff-only`, then rerun the deployment script.
 
@@ -124,65 +145,15 @@ Deploy updates with `git pull --ff-only`, then rerun the deployment script.
 - Allow TCP 80 only from the event network.
 - Allow TCP 22 only from administrator IP addresses.
 - Allow outbound HTTPS to Ark and package registries.
-- Add HTTPS before using `APP_AUTH_TOKEN` across an untrusted network.
+- Add HTTPS before sending account passwords or security keys across an
+  untrusted network. Do not expose the application directly to the public
+  Internet; restrict the web CIDR to the event or administrator network.
 
 Stop the application without deleting Agent data:
 
 ```bash
 docker compose --env-file .env.production down
 ```
-
-## Terraform deployment
-
-Terraform uses `volcenginecc` to create a VPC, subnet, security group, ECS
-instance, EIP, and cloud-init configuration.
-
-Requirements:
-
-- Terraform 1.6+
-- Volcengine account AK/SK with resource-creation permissions
-- Existing ECS SSH key pair
-- Ubuntu image ID and instance type available in the selected region
-- Public Git URL for this repository
-
-Create configuration files:
-
-```bash
-cp .env.example .env.production
-cp deploy/volcengine/terraform.tfvars.example \
-  deploy/volcengine/terraform.tfvars
-```
-
-Set `ARK_API_KEY` and `ARK_MODEL` in `.env.production`. Set the region, zone,
-image, instance type, key pair, allowed CIDRs, and repository URL in
-`terraform.tfvars`.
-
-Provide account credentials only through the current shell:
-
-```bash
-export VOLCENGINE_ACCESS_KEY=your-access-key
-export VOLCENGINE_SECRET_KEY=your-secret-key
-./scripts/deploy-volcengine.sh
-```
-
-After Terraform prints `app_url`, allow 5 to 10 minutes for cloud-init and the
-Docker build. Inspect progress with:
-
-```bash
-ssh root@your-ecs-public-ip
-cloud-init status --wait
-tail -n 200 /var/log/cloud-init-output.log
-```
-
-Destroy the stack when the event ends:
-
-```bash
-terraform -chdir=deploy/volcengine destroy
-```
-
-> [!CAUTION]
-> Destroying the stack removes the ECS instance, system disk, and Agent
-> workspaces. Back up required code first.
 
 ## Secret handling
 

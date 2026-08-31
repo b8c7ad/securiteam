@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentService } from "./agent-service.js";
 import { loadConfig } from "./config.js";
 import { JsonStore } from "./store.js";
@@ -129,5 +129,16 @@ describe("Agent lifecycle", () => {
 
     finish({ output: "done", threadId: "thread", usage: null });
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+  });
+
+  it("uses the requested output limit for direct Ark calls", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ choices: [{ message: { content: "hello" } }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Ark" });
+    await service.runDirectToCompletion(agent.id, "say hello", 1234);
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string) as { max_tokens: number };
+    expect(body.max_tokens).toBe(1234);
+    vi.unstubAllGlobals();
   });
 });

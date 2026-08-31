@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import path from "node:path";
 import { loadConfig } from "./config.js";
 import {
   buildContainerRunArgs,
@@ -33,7 +34,9 @@ describe("Container Codex runner", () => {
     );
     expect(args).toContain("runtime:test");
     expect(args).toContain("type=bind,src=/tmp/agent-workspace,dst=/workspace");
-    expect(args).toContain("type=bind,src=/tmp/codex-home,dst=/codex-home");
+    expect(args).toContain(
+      "type=bind,src=" + path.resolve("/tmp/codex-home") + ",dst=/codex-home",
+    );
     expect(args).toContain("501:20");
     expect(args).toContain("workspace-write");
     expect(args).toContain("/workspace");
@@ -59,5 +62,12 @@ describe("Container Codex runner", () => {
     );
     expect(args.slice(-3)).toEqual(["resume", "thread-123", "continue"]);
     expect(args).not.toContain("keep-id");
+  });
+
+  it("propagates per-run sandbox and reasoning settings", () => {
+    const config = loadConfig({ NODE_ENV: "test", CODEX_HOME: "/tmp/codex-home", RUNTIME_PROVIDER: "container" });
+    const args = buildContainerRunArgs({ agentId: "tester", workspacePath: "/tmp/workspace", prompt: "test", threadId: null, sandboxMode: "workspace-write", reasoningEffort: "medium" }, config);
+    expect(args).toContain("workspace-write");
+    expect(args).toContain('model_reasoning_effort="medium"');
   });
 });
